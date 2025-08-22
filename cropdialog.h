@@ -1,4 +1,4 @@
-// cropdialog.h - Version 3.4 (Arrow Key Movement Added)
+// cropdialog.h - Version 3.5 (Image Size Display)
 #ifndef CROPDIALOG_H
 #define CROPDIALOG_H
 
@@ -29,11 +29,12 @@ public:
     void clearSelection();
     void setAspectRatio(double ratio);
     void setScale(double newScale);
-    // THÊM MỚI: Phương thức để di chuyển vùng chọn
     void moveSelection(int dx, int dy);
 
 signals:
     void scaleChanged(double newScale);
+    // THÊM MỚI: Signal gửi kích thước vùng chọn
+    void selectionSizeChanged(const QSize &size);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -52,6 +53,7 @@ private:
     void resizeSelection(const QPointF &pos);
     Handle getHandleAt(const QPointF &pos) const;
     QRectF getHandleRect(Handle handle) const;
+    void emitSelectionSize(); // Helper
 
     QImage m_image;
     QRectF m_selectionRect;
@@ -85,6 +87,7 @@ signals:
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override; // THÊM MỚI
 
 private slots:
     void onAspectRatioChanged(int id, bool checked);
@@ -94,6 +97,8 @@ private slots:
     void applyCrop();
     void exportImage();
     void updateScaleLabel(double scale);
+    // THÊM MỚI: Slot cập nhật kích thước
+    void updateSizeLabel(const QSize &size);
 
 private:
     void setupUi();
@@ -103,12 +108,13 @@ private:
     QButtonGroup *m_ratioGroup;
     QImage m_currentImage;
     QLineEdit *m_scaleLabel;
+    QLineEdit *m_sizeLabel; // THÊM MỚI
 
     QWidget *m_customContainer;
     QRadioButton *m_customRadio;
     QRadioButton *m_ratioSubRadio;
     QRadioButton *m_sizeSubRadio;
-    QStackedWidget *m_customStackedWidget; // Dùng để ổn định kích thước
+    QStackedWidget *m_customStackedWidget;
     QSpinBox *m_customWidthSpinBox;
     QSpinBox *m_customHeightSpinBox;
     QLineEdit *m_ratioWEdit;

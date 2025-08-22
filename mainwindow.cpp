@@ -1,4 +1,4 @@
-// mainwindow.cpp - Version 6.7 (Library Import & Spacing Fix)
+// mainwindow.cpp - Version 6.9 (Major UI Refactor & Bug Fixes)
 #include "mainwindow.h"
 #include "videowidget.h"
 #include "viewpanel.h"
@@ -53,6 +53,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QThreadPool>
 #include <QPainter>
+#include <QButtonGroup>
 
 // Đăng ký các kiểu dữ liệu để có thể truyền qua signal-slot
 Q_DECLARE_METATYPE(VideoProcessor::AudioParams)
@@ -66,6 +67,8 @@ MainWindow::MainWindow(QWidget *parent)
     qRegisterMetaType<VideoProcessor::AudioParams>();
     qRegisterMetaType<AVRational>();
     qRegisterMetaType<QListWidgetItem*>();
+
+    m_titleFilter = new TitleEventFilter(this);
 
     setupUi();
     setupVideoWorker();
@@ -185,7 +188,7 @@ void MainWindow::setupVideoWorker()
 
 void MainWindow::setupUi()
 {
-    this->setWindowTitle("Frame Capture v3.5");
+    this->setWindowTitle("Frame Capture v3.6");
     this->setWindowIcon(QIcon(":/icons/icon.png"));
     
     this->resize(1600, 900); 
@@ -208,6 +211,8 @@ void MainWindow::setupUi()
 void MainWindow::setupLeftPanel(QWidget *parent)
 {
     QGroupBox *playerBox = new QGroupBox("Trình Phát", parent);
+    playerBox->setToolTip("Hiển thị video và các nút điều khiển phát.");
+    playerBox->installEventFilter(m_titleFilter);
     QVBoxLayout *leftLayout = new QVBoxLayout(playerBox);
     leftLayout->setContentsMargins(5,5,5,5);
     leftLayout->setSpacing(5);
@@ -299,6 +304,7 @@ void MainWindow::setupLeftPanel(QWidget *parent)
     connect(m_prevFrameButton, &QPushButton::clicked, this, &MainWindow::onPrevFrame);
     connect(m_timelineSlider, &QSlider::sliderPressed, this, &MainWindow::onTimelinePressed);
     connect(m_timelineSlider, &QSlider::sliderReleased, this, &MainWindow::onTimelineReleased);
+    connect(m_timelineSlider, &QSlider::sliderMoved, this, &MainWindow::onTimelineMoved);
     connect(m_muteButton, &QPushButton::clicked, this, &MainWindow::onMuteClicked);
     connect(m_volumeSlider, &QSlider::valueChanged, this, &MainWindow::onVolumeChanged);
     connect(m_toggleRightPanelButton, &QPushButton::clicked, this, &MainWindow::onToggleRightPanel);
@@ -335,8 +341,10 @@ void MainWindow::setupRightPanel(QWidget *parent)
 {
     QVBoxLayout *rightLayout = new QVBoxLayout(parent);
 
-    QGroupBox *libraryBox = new QGroupBox("Thư viện");
-    QVBoxLayout *libraryLayout = new QVBoxLayout();
+    QGroupBox *libraryBox = new QGroupBox("Thư viện", parent);
+    libraryBox->setToolTip("Quản lý các ảnh đã chụp hoặc thêm từ bên ngoài.");
+    libraryBox->installEventFilter(m_titleFilter);
+    QVBoxLayout *libraryLayout = new QVBoxLayout(libraryBox);
     m_libraryWidget = new LibraryWidget(this);
     m_libraryDelegate = new LibraryItemDelegate(this);
     m_libraryWidget->setItemDelegate(m_libraryDelegate);
@@ -344,11 +352,9 @@ void MainWindow::setupRightPanel(QWidget *parent)
     m_libraryWidget->setIconSize(QSize(128, 72));
     m_libraryWidget->setWordWrap(true);
     m_libraryWidget->setSpacing(2); 
-    // SỬA LỖI KHOẢNG CÁCH: Thêm gridSize để spacing có hiệu lực
     m_libraryWidget->setGridSize(QSize(m_libraryWidget->iconSize().width() + 4, m_libraryWidget->iconSize().height() + 4));
     m_libraryWidget->setStyleSheet("QListWidget::item { padding: 1px; margin: 0px; border: 0px; }");
     connect(m_libraryWidget, &LibraryWidget::itemQuickExportRequested, this, &MainWindow::onLibraryItemQuickExport);
-    // THÊM MỚI: Kết nối signal kéo-thả
     connect(m_libraryWidget, &LibraryWidget::imagesDropped, this, &MainWindow::onImagesDroppedOnLibrary);
 
     m_addImagesButton = new QPushButton("Thêm");
@@ -366,26 +372,28 @@ void MainWindow::setupRightPanel(QWidget *parent)
 
     QHBoxLayout *libraryButtonsLayout = new QHBoxLayout();
     libraryButtonsLayout->addStretch();
-    libraryButtonsLayout->addWidget(m_addImagesButton); // Thêm nút mới
     libraryButtonsLayout->addWidget(m_viewAndCropButton);
+    libraryButtonsLayout->addWidget(m_addImagesButton);
     libraryButtonsLayout->addWidget(m_deleteButton);
     libraryLayout->addLayout(libraryButtonsLayout);
     libraryLayout->addWidget(m_libraryWidget);
-    libraryBox->setLayout(libraryLayout);
 
-    QGroupBox *viewBox = new QGroupBox("Xem");
-    QVBoxLayout *viewLayout = new QVBoxLayout();
+    QGroupBox *viewBox = new QGroupBox("Xem", parent);
+    viewBox->setToolTip("Hiển thị ảnh ghép từ các ảnh đã chọn trong thư viện.");
+    viewBox->installEventFilter(m_titleFilter);
+    QVBoxLayout *viewLayout = new QVBoxLayout(viewBox);
     m_viewPanel = new ViewPanel();
     connect(m_viewPanel, &ViewPanel::scaleChanged, this, &MainWindow::updateViewPanelScaleLabel);
+    connect(m_viewPanel, &ViewPanel::compositedImageSizeChanged, this, &MainWindow::updateViewPanelSizeLabel);
     
     QPushButton *cropButton = new QPushButton("Xem");
     cropButton->setToolTip("Mở cửa sổ xem và cắt ảnh ghép");
     cropButton->setStyleSheet("background-color: #2980b9; color: white; border: none; padding: 5px; border-radius: 3px;");
     
-    QPushButton *fitButton = new QPushButton("Phóng");
-    fitButton->setToolTip("Thu phóng ảnh vừa với khung xem");
+    QPushButton *fitButton = new QPushButton("Vừa khung");
+    fitButton->setToolTip("Thu phóng ảnh vừa với khung xem (95%)");
     QPushButton *oneToOneButton = new QPushButton("1:1");
-    oneToOneButton->setToolTip("Xem ảnh với kích thước thật");
+    oneToOneButton->setToolTip("Xem ảnh với kích thước thật (100%)");
 
     m_viewScaleLabel = new QLineEdit("100%");
     m_viewScaleLabel->setReadOnly(true);
@@ -394,97 +402,148 @@ void MainWindow::setupRightPanel(QWidget *parent)
     m_viewScaleLabel->setToolTip("Tỉ lệ phóng hiện tại");
     m_viewScaleLabel->setStyleSheet("background-color: #2c3e50; color: white; border: 1px solid #606060; selection-background-color: transparent;");
 
+    m_viewSizeLabel = new QLineEdit("0x0");
+    m_viewSizeLabel->setReadOnly(true);
+    m_viewSizeLabel->setAlignment(Qt::AlignCenter);
+    m_viewSizeLabel->setFixedWidth(80);
+    m_viewSizeLabel->setToolTip("Kích thước ảnh ghép (pixel)");
+    m_viewSizeLabel->setStyleSheet("background-color: #2c3e50; color: white; border: 1px solid #606060; selection-background-color: transparent;");
+
     QHBoxLayout *viewControlsLayout = new QHBoxLayout();
-    viewControlsLayout->addWidget(m_viewScaleLabel);
     viewControlsLayout->addWidget(fitButton);
     viewControlsLayout->addWidget(oneToOneButton);
+    viewControlsLayout->addWidget(m_viewScaleLabel);
+    viewControlsLayout->addWidget(m_viewSizeLabel);
     viewControlsLayout->addStretch();
     viewControlsLayout->addWidget(cropButton);
 
     viewLayout->addLayout(viewControlsLayout);
     viewLayout->addWidget(m_viewPanel);
-    viewBox->setLayout(viewLayout);
 
-    QGroupBox *styleBox = new QGroupBox("Kiểu");
-    QHBoxLayout *mainStyleLayout = new QHBoxLayout(styleBox);
+    QGroupBox *styleBox = new QGroupBox("Kiểu", parent);
+    styleBox->setToolTip("Tùy chỉnh bố cục và giao diện của ảnh ghép.");
+    styleBox->installEventFilter(m_titleFilter);
+    QVBoxLayout *mainStyleLayout = new QVBoxLayout(styleBox);
 
-    // -- Cột Trái
-    QVBoxLayout *leftStyleLayout = new QVBoxLayout();
+    // -- Bố cục --
     QGroupBox *layoutTypeBox = new QGroupBox("Bố cục");
+    layoutTypeBox->setToolTip("Chọn cách sắp xếp các ảnh ghép.");
+    layoutTypeBox->installEventFilter(m_titleFilter);
     QHBoxLayout *radioLayout = new QHBoxLayout(layoutTypeBox);
     m_radioHorizontal = new QRadioButton("Ngang");
-    m_radioHorizontal->setToolTip("Ghép các ảnh theo chiều ngang");
     m_radioVertical = new QRadioButton("Dọc");
-    m_radioVertical->setToolTip("Ghép các ảnh theo chiều dọc");
-    m_radioGrid = new QRadioButton("Ô");
-    m_radioGrid->setToolTip("Ghép các ảnh vào một lưới tự động");
+    m_radioGrid = new QRadioButton("Lưới");
     m_radioHorizontal->setChecked(true);
+    
+    m_gridModeGroup = new QButtonGroup(this);
+    m_gridAutoRadio = new QRadioButton("Tự động");
+    m_gridColumnRadio = new QRadioButton("Cột:");
+    m_gridModeGroup->addButton(m_gridAutoRadio);
+    m_gridModeGroup->addButton(m_gridColumnRadio);
+    m_gridAutoRadio->setChecked(true);
+
+    m_gridColumnCountCombo = new QComboBox();
+    for(int i = 1; i <= 20; ++i) m_gridColumnCountCombo->addItem(QString::number(i));
+    
     radioLayout->addWidget(m_radioHorizontal);
     radioLayout->addWidget(m_radioVertical);
     radioLayout->addWidget(m_radioGrid);
-    leftStyleLayout->addWidget(layoutTypeBox);
-    leftStyleLayout->addStretch();
+    radioLayout->addSpacing(20);
+    radioLayout->addWidget(m_gridAutoRadio);
+    radioLayout->addWidget(m_gridColumnRadio);
+    radioLayout->addWidget(m_gridColumnCountCombo);
+    radioLayout->addStretch();
+    mainStyleLayout->addWidget(layoutTypeBox);
 
-    // -- Cột Phải
-    QVBoxLayout *rightStyleLayout = new QVBoxLayout();
-    QGridLayout *rightControlsLayout = new QGridLayout();
-    rightControlsLayout->setColumnStretch(2, 1);
+    // -- Tùy chỉnh chi tiết --
+    QHBoxLayout* detailLayout = new QHBoxLayout();
+    
+    QGroupBox *sizingBox = new QGroupBox("Kích thước ảnh");
+    sizingBox->setToolTip("Đồng bộ kích thước các ảnh được ghép.");
+    sizingBox->installEventFilter(m_titleFilter);
+    QVBoxLayout *sizingLayout = new QVBoxLayout(sizingBox);
+    m_sizingGroup = new QButtonGroup(this);
+    m_sizeOriginalRadio = new QRadioButton("Gốc");
+    m_sizeMatchFirstRadio = new QRadioButton("Đầu tiên");
+    m_sizeCustomRadio = new QRadioButton("Tuỳ chỉnh");
+    m_sizingGroup->addButton(m_sizeOriginalRadio);
+    m_sizingGroup->addButton(m_sizeMatchFirstRadio);
+    m_sizingGroup->addButton(m_sizeCustomRadio);
+    m_sizeOriginalRadio->setChecked(true);
+    sizingLayout->addWidget(m_sizeOriginalRadio);
+    sizingLayout->addWidget(m_sizeMatchFirstRadio);
+    sizingLayout->addWidget(m_sizeCustomRadio);
+
+    m_customSizeContainer = new QWidget();
+    QHBoxLayout *customSizeLayout = new QHBoxLayout(m_customSizeContainer);
+    customSizeLayout->setContentsMargins(15, 0, 0, 0);
+    m_customWidthSpinBox = new QSpinBox();
+    m_customWidthSpinBox->setRange(10, 8000); m_customWidthSpinBox->setValue(1280);
+    m_customHeightSpinBox = new QSpinBox();
+    m_customHeightSpinBox->setRange(10, 8000); m_customHeightSpinBox->setValue(720);
+    m_customSizeLabelW = new QLabel("Ngang:");
+    m_customSizeLabelH = new QLabel("Cao:");
+    
+    QHBoxLayout* customWLayout = new QHBoxLayout();
+    customWLayout->addWidget(m_customSizeLabelW);
+    customWLayout->addWidget(createVerticalSpinBox(m_customWidthSpinBox));
+    
+    QHBoxLayout* customHLayout = new QHBoxLayout();
+    customHLayout->addWidget(m_customSizeLabelH);
+    customHLayout->addWidget(createVerticalSpinBox(m_customHeightSpinBox));
+
+    customSizeLayout->addLayout(customWLayout);
+    customSizeLayout->addLayout(customHLayout);
+    customSizeLayout->addStretch();
+    sizingLayout->addWidget(m_customSizeContainer);
+    sizingLayout->addStretch();
+    detailLayout->addWidget(sizingBox);
+
+    QGroupBox *decorationBox = new QGroupBox("Trang trí");
+    decorationBox->setToolTip("Thêm viền, bo góc, và các hiệu ứng khác.");
+    decorationBox->installEventFilter(m_titleFilter);
+    QGridLayout *decorationLayout = new QGridLayout(decorationBox);
     
     m_borderSpinBox = new QSpinBox();
-    m_borderSpinBox->setToolTip("Đặt độ rộng viền (pixel)");
-    m_borderSpinBox->setRange(0, 200);
-    m_borderSpinBox->setValue(0);
-    m_borderSpinBox->setFixedWidth(40);
+    m_borderSpinBox->setRange(0, 200); m_borderSpinBox->setValue(0); m_borderSpinBox->setFixedWidth(40);
     m_borderSlider = new QSlider(Qt::Horizontal);
     m_borderSlider->setRange(0, 200);
-    rightControlsLayout->addWidget(new QLabel("Viền:"), 0, 0);
-    rightControlsLayout->addWidget(createVerticalSpinBox(m_borderSpinBox), 0, 1);
-    rightControlsLayout->addWidget(m_borderSlider, 0, 2);
+    decorationLayout->addWidget(new QLabel("Viền:"), 0, 0);
+    decorationLayout->addWidget(createVerticalSpinBox(m_borderSpinBox), 0, 1);
+    decorationLayout->addWidget(m_borderSlider, 0, 2);
 
     m_cornerRadiusSpinBox = new QSpinBox();
-    m_cornerRadiusSpinBox->setToolTip("Đặt độ bo tròn góc (%)");
-    m_cornerRadiusSpinBox->setRange(0, 50);
-    m_cornerRadiusSpinBox->setValue(0);
-    m_cornerRadiusSpinBox->setSuffix("%");
-    m_cornerRadiusSpinBox->setFixedWidth(40);
+    m_cornerRadiusSpinBox->setRange(0, 50); m_cornerRadiusSpinBox->setValue(0); m_cornerRadiusSpinBox->setSuffix("%"); m_cornerRadiusSpinBox->setFixedWidth(40);
     m_cornerRadiusSlider = new QSlider(Qt::Horizontal);
     m_cornerRadiusSlider->setRange(0, 50);
-    rightControlsLayout->addWidget(new QLabel("Bo Viền:"), 1, 0);
-    rightControlsLayout->addWidget(createVerticalSpinBox(m_cornerRadiusSpinBox), 1, 1);
-    rightControlsLayout->addWidget(m_cornerRadiusSlider, 1, 2);
+    decorationLayout->addWidget(new QLabel("Bo góc:"), 1, 0);
+    decorationLayout->addWidget(createVerticalSpinBox(m_cornerRadiusSpinBox), 1, 1);
+    decorationLayout->addWidget(m_cornerRadiusSlider, 1, 2);
 
     m_spacingSpinBox = new QSpinBox();
-    m_spacingSpinBox->setToolTip("Đặt khoảng cách (pixel) giữa các ảnh ghép");
-    m_spacingSpinBox->setRange(0, 100);
-    m_spacingSpinBox->setValue(0);
-    m_spacingSpinBox->setFixedWidth(40);
+    m_spacingSpinBox->setRange(0, 100); m_spacingSpinBox->setValue(0); m_spacingSpinBox->setFixedWidth(40);
     QSlider* spacingSlider = new QSlider(Qt::Horizontal);
     spacingSlider->setRange(0, 100);
-    rightControlsLayout->addWidget(new QLabel("Khoảng cách:"), 2, 0);
-    rightControlsLayout->addWidget(createVerticalSpinBox(m_spacingSpinBox), 2, 1);
-    rightControlsLayout->addWidget(spacingSlider, 2, 2);
+    decorationLayout->addWidget(new QLabel("Khoảng cách:"), 2, 0);
+    decorationLayout->addWidget(createVerticalSpinBox(m_spacingSpinBox), 2, 1);
+    decorationLayout->addWidget(spacingSlider, 2, 2);
 
+    QHBoxLayout *bgColorLayout = new QHBoxLayout();
     m_colorSwatch = new ClickableFrame();
-    m_colorSwatch->setToolTip("Nhấn để chọn màu nền");
-    m_colorSwatch->setFrameShape(QFrame::Box);
-    m_colorSwatch->setFrameShadow(QFrame::Sunken);
-    m_colorSwatch->setAutoFillBackground(true);
-    m_colorSwatch->setFixedSize(24, 24);
-    QPalette pal = m_colorSwatch->palette();
-    pal.setColor(QPalette::Window, m_viewPanel->palette().color(QPalette::Window));
-    m_colorSwatch->setPalette(pal);
-    connect(m_colorSwatch, &ClickableFrame::clicked, this, &MainWindow::onChooseBackgroundColor);
-    rightControlsLayout->addWidget(new QLabel("Nền:"), 2, 3, Qt::AlignRight);
-    rightControlsLayout->addWidget(m_colorSwatch, 2, 4);
+    m_colorSwatch->setFrameShape(QFrame::Box); m_colorSwatch->setFrameShadow(QFrame::Sunken); m_colorSwatch->setAutoFillBackground(true); m_colorSwatch->setFixedSize(22, 22);
+    QPalette pal = m_colorSwatch->palette(); pal.setColor(QPalette::Window, m_viewPanel->palette().color(QPalette::Window)); m_colorSwatch->setPalette(pal);
+    QPushButton* changeColorButton = new QPushButton("Thay đổi");
+    bgColorLayout->addWidget(m_colorSwatch);
+    bgColorLayout->addWidget(changeColorButton);
+    decorationLayout->addWidget(new QLabel("Nền:"), 3, 0);
+    decorationLayout->addLayout(bgColorLayout, 3, 1, 1, 2);
+    detailLayout->addWidget(decorationBox);
 
-    rightStyleLayout->addLayout(rightControlsLayout);
-    rightStyleLayout->addStretch();
+    mainStyleLayout->addLayout(detailLayout);
 
-    mainStyleLayout->addLayout(leftStyleLayout);
-    mainStyleLayout->addSpacing(20);
-    mainStyleLayout->addLayout(rightStyleLayout);
-
-    QGroupBox *exportBox = new QGroupBox("Xuất");
+    QGroupBox *exportBox = new QGroupBox("Xuất", parent);
+    exportBox->setToolTip("Lưu ảnh ghép thành file.");
+    exportBox->installEventFilter(m_titleFilter);
     QVBoxLayout *exportLayout = new QVBoxLayout(exportBox);
     m_savePathEdit = new QLineEdit();
     m_savePathEdit->setReadOnly(true);
@@ -536,7 +595,13 @@ void MainWindow::setupRightPanel(QWidget *parent)
     connect(m_radioHorizontal, &QRadioButton::toggled, this, &MainWindow::onStyleChanged);
     connect(m_radioVertical, &QRadioButton::toggled, this, &MainWindow::onStyleChanged);
     connect(m_radioGrid, &QRadioButton::toggled, this, &MainWindow::onStyleChanged);
+    connect(m_gridModeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::onGridModeChanged);
+    connect(m_gridColumnCountCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onGridModeChanged);
     
+    connect(m_sizingGroup, &QButtonGroup::buttonClicked, this, &MainWindow::onSizingModeChanged);
+    connect(m_customWidthSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onSizingModeChanged);
+    connect(m_customHeightSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onSizingModeChanged);
+
     connect(m_spacingSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), spacingSlider, &QSlider::setValue);
     connect(spacingSlider, &QSlider::valueChanged, m_spacingSpinBox, &QSpinBox::setValue);
     connect(spacingSlider, &QSlider::valueChanged, m_viewPanel, &ViewPanel::setSpacing);
@@ -549,9 +614,14 @@ void MainWindow::setupRightPanel(QWidget *parent)
     connect(m_cornerRadiusSlider, &QSlider::valueChanged, m_cornerRadiusSpinBox, &QSpinBox::setValue);
     connect(m_cornerRadiusSlider, &QSlider::valueChanged, this, &MainWindow::onCornerRadiusSliderChanged);
 
+    connect(changeColorButton, &QPushButton::clicked, this, &MainWindow::onChooseBackgroundColor);
+    connect(m_colorSwatch, &ClickableFrame::clicked, this, &MainWindow::onChooseBackgroundColor);
     connect(changePathButton, &QPushButton::clicked, this, &MainWindow::onChooseSavePath);
     connect(openFolderButton, &QPushButton::clicked, this, &MainWindow::onOpenSaveFolder);
     connect(m_exportButton, &QPushButton::clicked, this, &MainWindow::onExport);
+
+    onStyleChanged();
+    onSizingModeChanged();
 }
 
 // --- Các slot xử lý tín hiệu từ Worker ---
@@ -625,10 +695,21 @@ void MainWindow::updateViewPanelScaleLabel(double scale)
     m_viewScaleLabel->setText(QString::number(qRound(scale * 100)) + "%");
 }
 
+void MainWindow::updateViewPanelSizeLabel(const QSize &size)
+{
+    m_viewSizeLabel->setText(QString("%1x%2").arg(size.width()).arg(size.height()));
+}
+
+
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
-    if (event->mimeData()->hasUrls()) {
-        event->acceptProposedAction();
+    // SỬA LỖI KÉO-THẢ: Chỉ chấp nhận nếu không kéo vào thư viện
+    if (!m_libraryWidget->geometry().contains(event->pos())) {
+        if (event->mimeData()->hasUrls()) {
+            event->acceptProposedAction();
+        }
+    } else {
+        event->ignore();
     }
 }
 
@@ -713,6 +794,7 @@ void MainWindow::onPrevFrame()
 
 void MainWindow::onTimelinePressed()
 {
+    m_isScrubbing = true;
     if (m_isPlaying) {
         emit requestPlayPause(false);
     }
@@ -720,16 +802,22 @@ void MainWindow::onTimelinePressed()
 
 void MainWindow::onTimelineReleased()
 {
-    int position = m_timelineSlider->value();
-    if (m_duration > 0) {
-        qint64 targetTime = m_duration * (double)position / 1000.0;
-        emit requestSeek(targetTime);
-    }
+    m_isScrubbing = false;
+    onTimelineMoved(m_timelineSlider->value());
     if (m_isPlaying) {
         emit requestPlayPause(true);
     }
     this->setFocus();
 }
+
+void MainWindow::onTimelineMoved(int position)
+{
+    if (m_duration > 0) {
+        qint64 targetTime = m_duration * (double)position / 1000.0;
+        emit requestSeek(targetTime);
+    }
+}
+
 
 void MainWindow::onCapture()
 {
@@ -873,7 +961,6 @@ void MainWindow::onLibraryItemQuickExport(QListWidgetItem *item)
     }
 }
 
-// THÊM MỚI: Slot để xử lý nút "Thêm"
 void MainWindow::onAddImagesToLibrary()
 {
     QStringList filePaths = QFileDialog::getOpenFileNames(
@@ -892,7 +979,6 @@ void MainWindow::onAddImagesToLibrary()
     }
 }
 
-// THÊM MỚI: Slot để xử lý sự kiện kéo-thả
 void MainWindow::onImagesDroppedOnLibrary(const QList<QUrl> &urls)
 {
     for (const QUrl &url : urls) {
@@ -917,7 +1003,6 @@ void MainWindow::onLibraryItemChanged(QListWidgetItem *item)
         }
     }
     m_viewPanel->setImages(checkedImages);
-    m_viewPanel->fitToWindow();
 }
 
 void MainWindow::onViewPanelCrop()
@@ -941,15 +1026,68 @@ void MainWindow::onViewPanelCrop()
 
 void MainWindow::onStyleChanged()
 {
-    if (m_radioHorizontal->isChecked()) {
-        m_viewPanel->setLayoutType(ViewPanel::Horizontal);
-    } else if (m_radioVertical->isChecked()) {
-        m_viewPanel->setLayoutType(ViewPanel::Vertical);
-    } else {
-        m_viewPanel->setLayoutType(ViewPanel::Grid);
-    }
-    m_viewPanel->fitToWindow();
+    bool isGrid = m_radioGrid->isChecked();
+    m_gridAutoRadio->setEnabled(isGrid);
+    m_gridColumnRadio->setEnabled(isGrid);
+    m_gridColumnCountCombo->setEnabled(isGrid && m_gridColumnRadio->isChecked());
+
+    m_viewPanel->setLayoutType(m_radioHorizontal->isChecked() ? ViewPanel::Horizontal :
+                               m_radioVertical->isChecked() ? ViewPanel::Vertical :
+                               ViewPanel::Grid);
+    onGridModeChanged();
+    onSizingModeChanged();
 }
+
+void MainWindow::onGridModeChanged()
+{
+    if (!m_radioGrid->isChecked()) {
+        m_viewPanel->setGridColumnCount(0); // Tắt chế độ cột
+        return;
+    }
+    m_gridColumnCountCombo->setEnabled(m_gridColumnRadio->isChecked());
+    if (m_gridColumnRadio->isChecked()) {
+        m_viewPanel->setGridColumnCount(m_gridColumnCountCombo->currentText().toInt());
+    } else {
+        m_viewPanel->setGridColumnCount(0); // 0 = tự động
+    }
+}
+
+
+void MainWindow::onSizingModeChanged()
+{
+    bool isCustom = m_sizeCustomRadio->isChecked();
+    m_customSizeContainer->setVisible(isCustom);
+
+    if (m_radioHorizontal->isChecked()) {
+        m_sizeCustomRadio->setText("Cao");
+        m_customSizeLabelW->hide();
+        m_customWidthSpinBox->hide();
+        m_customSizeLabelH->show();
+        m_customHeightSpinBox->show();
+    } else if (m_radioVertical->isChecked()) {
+        m_sizeCustomRadio->setText("Ngang");
+        m_customSizeLabelW->show();
+        m_customWidthSpinBox->show();
+        m_customSizeLabelH->hide();
+        m_customHeightSpinBox->hide();
+    } else { // Grid
+        m_sizeCustomRadio->setText("Cỡ");
+        m_customSizeLabelW->show();
+        m_customWidthSpinBox->show();
+        m_customSizeLabelH->show();
+        m_customHeightSpinBox->show();
+    }
+
+    if (m_sizeOriginalRadio->isChecked()) {
+        m_viewPanel->setSizingMode(ViewPanel::Original);
+    } else if (m_sizeMatchFirstRadio->isChecked()) {
+        m_viewPanel->setSizingMode(ViewPanel::MatchFirst);
+    } else { // Custom
+        m_viewPanel->setSizingMode(ViewPanel::Custom);
+        m_viewPanel->setCustomSize(m_customWidthSpinBox->value(), m_customHeightSpinBox->value());
+    }
+}
+
 
 void MainWindow::onExport() 
 {
@@ -1053,11 +1191,13 @@ void MainWindow::updateUIWithFrame(const FrameData& frameData)
         if (m_timeBase.den == 0) return;
         int64_t currentTimeUs = m_currentPts * 1000000 * m_timeBase.num / m_timeBase.den;
         updateTimeLabel(currentTimeUs, m_duration);
-        m_timelineSlider->blockSignals(true);
-        if (m_duration > 0) {
-            m_timelineSlider->setValue((double)currentTimeUs / m_duration * 1000);
+        if (!m_isScrubbing) {
+            m_timelineSlider->blockSignals(true);
+            if (m_duration > 0) {
+                m_timelineSlider->setValue((double)currentTimeUs / m_duration * 1000);
+            }
+            m_timelineSlider->blockSignals(false);
         }
-        m_timelineSlider->blockSignals(false);
     }
     if(m_audioDevice && !frameData.audioData.isEmpty()) {
         m_audioDevice->write(frameData.audioData);
@@ -1097,7 +1237,6 @@ void MainWindow::updatePlayerState(bool isVideoLoaded)
     m_exportButton->setEnabled(isVideoLoaded);
 }
 
-// THÊM MỚI: Hàm helper để thêm ảnh vào thư viện, tránh lặp code
 void MainWindow::addImageToList(const QString &imagePath)
 {
     ensureRightPanelVisible();
