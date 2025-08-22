@@ -1,4 +1,4 @@
-// imageviewerdialog.cpp - Version 1.0
+// imageviewerdialog.cpp - Version 1.1 (Sửa lỗi Fit và đổi tên nút)
 #include "imageviewerdialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -27,13 +27,17 @@ void ImageViewerDialog::wheelEvent(QWheelEvent *event)
 void ImageViewerDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
-    fitToWindow();
+    // SỬA LỖI: Gọi fitToWindow sau một khoảng trễ ngắn để đảm bảo layout đã được tính toán
+    QTimer::singleShot(0, this, &ImageViewerDialog::fitToWindow);
 }
 
 void ImageViewerDialog::fitToWindow()
 {
-    double w_ratio = (double)m_scrollArea->width() / (m_sourceImage.width() + 10);
-    double h_ratio = (double)m_scrollArea->height() / (m_sourceImage.height() + 10);
+    if (m_sourceImage.isNull() || !m_scrollArea->viewport()) return;
+
+    // SỬA LỖI: Tính toán tỉ lệ dựa trên kích thước thực của viewport
+    double w_ratio = (double)m_scrollArea->viewport()->width() / m_sourceImage.width();
+    double h_ratio = (double)m_scrollArea->viewport()->height() / m_sourceImage.height();
     updateScale(qMin(w_ratio, h_ratio));
 }
 
@@ -54,7 +58,8 @@ void ImageViewerDialog::setupUi()
     mainLayout->addWidget(m_scrollArea, 1);
 
     QHBoxLayout *controlsLayout = new QHBoxLayout();
-    QPushButton *fitButton = new QPushButton("Phóng");
+    // SỬA LỖI: Đổi tên nút
+    QPushButton *fitButton = new QPushButton("Vừa khung");
     QPushButton *oneToOneButton = new QPushButton("1:1");
     QPushButton *closeButton = new QPushButton("Đóng");
 

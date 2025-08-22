@@ -1,4 +1,4 @@
-// videoprocessor.cpp - Version 1.6 (Fixed typo)
+// videoprocessor.cpp - Version 1.7 (Sửa lỗi Heap Corruption)
 #include "videoprocessor.h"
 #include <QDebug>
 
@@ -8,7 +8,7 @@ VideoProcessor::~VideoProcessor() { cleanup(); }
 bool VideoProcessor::openFile(const QString &filePath)
 {
     cleanup();
-    stop_processing = false; // Reset cờ khi mở file mới
+    stop_processing = false; 
     std::string filePathStr = filePath.toStdString();
     if (avformat_open_input(&formatContext, filePathStr.c_str(), nullptr, nullptr) != 0) return false;
     if (avformat_find_stream_info(formatContext, nullptr) < 0) { cleanup(); return false; }
@@ -106,7 +106,7 @@ FrameData VideoProcessor::seekAndDecode(int64_t target_ts_us)
         int64_t current_ts_us = frameData.pts * 1000000 * timeBase.num / timeBase.den;
         if (current_ts_us >= target_ts_us) return frameData;
     }
-    return {}; // Trả về rỗng nếu bị dừng
+    return {}; 
 }
 
 bool VideoProcessor::seek(int64_t timestamp)
@@ -127,9 +127,11 @@ VideoProcessor::AudioParams VideoProcessor::getAudioParams() const { return m_au
 QImage VideoProcessor::convertFrameToImage(AVFrame* frame)
 {
     if (!frame) return QImage();
-    swsContext = sws_getCachedContext(swsContext, frame->width, frame->height, (AVPixelFormat)frame->format, frame->width, frame->height, AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    // SỬA LỖI HEAP CORRUPTION: Chuyển sang định dạng BGRA/ARGB32 an toàn hơn
+    swsContext = sws_getCachedContext(swsContext, frame->width, frame->height, (AVPixelFormat)frame->format, frame->width, frame->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!swsContext) return QImage();
-    QImage image(frame->width, frame->height, QImage::Format_RGB888);
+    
+    QImage image(frame->width, frame->height, QImage::Format_ARGB32);
     uint8_t* const data[] = { image.bits() };
     const int linesize[] = { static_cast<int>(image.bytesPerLine()) };
     sws_scale(swsContext, (const uint8_t* const*)frame->data, frame->linesize, 0, frame->height, data, linesize);
@@ -150,6 +152,7 @@ QByteArray VideoProcessor::resampleAudioFrame(AVFrame *frame)
     
     QByteArray buffer;
     if(out_samples > 0) {
+        // Kích thước buffer = số sample * số kênh * kích thước 1 sample
         buffer = QByteArray(reinterpret_cast<char*>(dst_data[0]), out_samples * 2 * sizeof(int16_t));
     }
 
@@ -162,7 +165,6 @@ QByteArray VideoProcessor::resampleAudioFrame(AVFrame *frame)
 void VideoProcessor::cleanup()
 {
     stop_processing = true; 
-    // SỬA LỖI: Sửa lỗi đánh máy
     if (swsContext) { sws_freeContext(swsContext); swsContext = nullptr; }
     if (videoCodecContext) { avcodec_free_context(&videoCodecContext); videoCodecContext = nullptr; }
     if (swrContext) { swr_free(&swrContext); swrContext = nullptr; }

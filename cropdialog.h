@@ -1,4 +1,4 @@
-// cropdialog.h - Version 3.5 (Image Size Display)
+// cropdialog.h - Version 3.6 (Sửa lỗi 16:9)
 #ifndef CROPDIALOG_H
 #define CROPDIALOG_H
 
@@ -30,10 +30,10 @@ public:
     void setAspectRatio(double ratio);
     void setScale(double newScale);
     void moveSelection(int dx, int dy);
+    void setSelection(const QRect& rect);
 
 signals:
     void scaleChanged(double newScale);
-    // THÊM MỚI: Signal gửi kích thước vùng chọn
     void selectionSizeChanged(const QSize &size);
 
 protected:
@@ -53,7 +53,7 @@ private:
     void resizeSelection(const QPointF &pos);
     Handle getHandleAt(const QPointF &pos) const;
     QRectF getHandleRect(Handle handle) const;
-    void emitSelectionSize(); // Helper
+    void emitSelectionSize();
 
     QImage m_image;
     QRectF m_selectionRect;
@@ -87,7 +87,7 @@ signals:
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void showEvent(QShowEvent *event) override;
-    bool eventFilter(QObject *watched, QEvent *event) override; // THÊM MỚI
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void onAspectRatioChanged(int id, bool checked);
@@ -97,8 +97,9 @@ private slots:
     void applyCrop();
     void exportImage();
     void updateScaleLabel(double scale);
-    // THÊM MỚI: Slot cập nhật kích thước
+
     void updateSizeLabel(const QSize &size);
+    void createDefaultSelection();
 
 private:
     void setupUi();
@@ -108,7 +109,7 @@ private:
     QButtonGroup *m_ratioGroup;
     QImage m_currentImage;
     QLineEdit *m_scaleLabel;
-    QLineEdit *m_sizeLabel; // THÊM MỚI
+    QLineEdit *m_sizeLabel;
 
     QWidget *m_customContainer;
     QRadioButton *m_customRadio;

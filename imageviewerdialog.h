@@ -1,9 +1,10 @@
-// imageviewerdialog.h - Version 1.0
+// imageviewerdialog.h - Version 1.1 (Thêm QTimer)
 #ifndef IMAGEVIEWERDIALOG_H
 #define IMAGEVIEWERDIALOG_H
 
 #include <QDialog>
 #include <QImage>
+#include <QTimer> // THÊM MỚI
 
 class QLabel;
 class QScrollArea;

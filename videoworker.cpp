@@ -1,26 +1,26 @@
-// videoworker.cpp - Version 1.2 (Modernized with std::unique_ptr)
+// videoworker.cpp - Version 1.4 (Sửa lỗi tua video và giật)
 #include "videoworker.h"
 #include <QDebug>
 #include <QThread>
 
-// THAY ĐỔI: Không cần include <memory> ở đây vì đã có trong file .h
-
 VideoWorker::VideoWorker(QObject *parent) : QObject(parent)
 {
-    // THAY ĐỔI: Khởi tạo m_processor bằng std::make_unique
     m_processor = std::make_unique<VideoProcessor>();
     m_playbackTimer = new QTimer(this);
+    // SỬA LỖI GIẬT: Chuyển sang timer chính xác hơn
+    m_playbackTimer->setTimerType(Qt::PreciseTimer);
     connect(m_playbackTimer, &QTimer::timeout, this, &VideoWorker::onPlaybackTimerTimeout);
 }
 
 VideoWorker::~VideoWorker()
 {
     m_playbackTimer->stop();
-    // THAY ĐỔI: Không cần "delete m_processor;" nữa, std::unique_ptr sẽ tự động giải phóng bộ nhớ.
 }
 
 void VideoWorker::processOpenFile(const QString &filePath)
 {
+    m_isPlaying = false;
+    m_playbackTimer->stop();
     bool success = m_processor->openFile(filePath);
     if (success) {
         VideoProcessor::AudioParams params = m_processor->getAudioParams();
@@ -41,11 +41,15 @@ void VideoWorker::processOpenFile(const QString &filePath)
 
 void VideoWorker::processSeek(qint64 timestamp)
 {
+    m_isSeeking = true;
+    
     FrameData frame = m_processor->seekAndDecode(timestamp);
     if (!frame.image.isNull()) {
         m_currentPts = frame.pts;
         emit frameReady(frame);
     }
+
+    m_isSeeking = false;
 }
 
 void VideoWorker::processPlayPause(bool play)
@@ -54,7 +58,8 @@ void VideoWorker::processPlayPause(bool play)
     if (m_isPlaying) {
         double frameRate = m_processor->getFrameRate();
         if (frameRate > 0) {
-            m_playbackTimer->start(1000 / frameRate);
+            // Bắt đầu phát ngay lập tức
+            onPlaybackTimerTimeout();
         }
     } else {
         m_playbackTimer->stop();
@@ -80,11 +85,7 @@ void VideoWorker::processPrevFrame()
     double frameDurationUs = 1000000.0 / frameRate;
     qint64 prevTimeUs = qMax((qint64)0, currentTimeUs - (long long)(1.5 * frameDurationUs));
     
-    FrameData frame = m_processor->seekAndDecode(prevTimeUs);
-    if (!frame.image.isNull()) {
-        m_currentPts = frame.pts;
-        emit frameReady(frame);
-    }
+    processSeek(prevTimeUs);
 }
 
 void VideoWorker::stop()
@@ -99,10 +100,20 @@ void VideoWorker::stop()
 
 void VideoWorker::onPlaybackTimerTimeout()
 {
+    if (m_isSeeking || !m_isPlaying) return;
+
     FrameData frame = m_processor->decodeNextFrame();
     if (!frame.image.isNull()) {
         m_currentPts = frame.pts;
         emit frameReady(frame);
+
+        // Lên lịch cho frame tiếp theo
+        if (m_isPlaying) {
+            double frameRate = m_processor->getFrameRate();
+            if (frameRate > 0) {
+                m_playbackTimer->start(1000 / frameRate);
+            }
+        }
     } else {
         m_isPlaying = false;
         m_playbackTimer->stop();

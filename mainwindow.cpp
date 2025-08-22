@@ -1,65 +1,40 @@
-// mainwindow.cpp - Version 6.9 (Major UI Refactor & Bug Fixes)
+// mainwindow.cpp - Version 8.4 (Sửa lỗi tua video)
 #include "mainwindow.h"
-#include "videowidget.h"
-#include "viewpanel.h"
-#include "librarywidget.h"
-#include "libraryitemdelegate.h"
-#include "cropdialog.h"
-#include "imageviewerdialog.h"
+#include "playerpanel.h"
+#include "sidepanel.h" 
+#include "exportpanel.h" 
+#include "librarywidget.h" 
 #include "videoworker.h"
+#include "videowidget.h"
 
 #include <QSplitter>
-#include <QWidget>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGridLayout>
-#include <QPushButton>
-#include <QSlider>
-#include <QLabel>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTimer>
-#include <QStyle>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QKeyEvent>
 #include <QMimeData>
 #include <QUrl>
-#include <QListWidget>
-#include <QIcon>
-#include <QGroupBox>
-#include <QRadioButton>
-#include <QSpinBox>
-#include <QComboBox>
-#include <QLineEdit>
 #include <QFileInfo>
-#include <QDesktopServices>
 #include <QDir>
-#include <QMap>
-#include <algorithm>
 #include <QAudioSink>
 #include <QMediaDevices>
-#include <QColorDialog>
-#include <QFrame>
-#include <QAction>
-#include <QToolButton>
 #include <QThread>
 #include <QStandardPaths>
 #include <QUuid>
-#include <memory>
 #include <QSettings>
 #include <QCloseEvent>
-#include <QToolTip>
-#include <QtConcurrent/QtConcurrent>
-#include <QThreadPool>
 #include <QPainter>
-#include <QButtonGroup>
+#include <QCursor> 
+#include <QLineEdit> 
+#include <QSpinBox>  
+#include <QtConcurrent>
+#include <QThreadPool> 
 
-// Đăng ký các kiểu dữ liệu để có thể truyền qua signal-slot
 Q_DECLARE_METATYPE(VideoProcessor::AudioParams)
 Q_DECLARE_METATYPE(AVRational)
 Q_DECLARE_METATYPE(QListWidgetItem*)
-
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -68,23 +43,13 @@ MainWindow::MainWindow(QWidget *parent)
     qRegisterMetaType<AVRational>();
     qRegisterMetaType<QListWidgetItem*>();
 
-    m_titleFilter = new TitleEventFilter(this);
-
     setupUi();
     setupVideoWorker();
     setupTempDirectory();
     loadSettings();
     setAcceptDrops(true);
 
-    // Khởi động với panel bên phải được thu gọn
-    QTimer::singleShot(0, this, [this]() {
-        if (!m_toggleRightPanelButton->isChecked()) {
-            m_toggleRightPanelButton->setChecked(true);
-            onToggleRightPanel();
-        }
-    });
-
-    updatePlayerState(false);
+    emit playerStateChanged(false);
 }
 
 MainWindow::~MainWindow()
@@ -97,31 +62,76 @@ MainWindow::~MainWindow()
     cleanupTempDirectory();
 }
 
+void MainWindow::setupUi()
+{
+    this->setWindowTitle("Frame Capture v6.0 (Stable)");
+    this->setWindowIcon(QIcon(":/icons/icon.png"));
+    this->resize(1600, 900); 
+
+    mainSplitter = new QSplitter(Qt::Horizontal, this);
+    mainSplitter->setHandleWidth(1);
+    mainSplitter->setStyleSheet("QSplitter::handle { background-color: #606060; }");
+    this->setCentralWidget(mainSplitter);
+
+    m_playerPanel = new PlayerPanel();
+    m_sidePanel = new SidePanel();
+
+    mainSplitter->addWidget(m_playerPanel);
+    mainSplitter->addWidget(m_sidePanel);
+
+    // --- Connections ---
+    connect(m_playerPanel, &PlayerPanel::openFileClicked, this, &MainWindow::onOpenFile);
+    connect(m_playerPanel, &PlayerPanel::playPauseClicked, this, &MainWindow::onPlayPause);
+    connect(m_playerPanel, &PlayerPanel::nextFrameClicked, this, [this](){ emit requestNextFrame(); });
+    connect(m_playerPanel, &PlayerPanel::prevFrameClicked, this, [this](){ emit requestPrevFrame(); });
+    connect(m_playerPanel, &PlayerPanel::captureClicked, this, &MainWindow::onCapture);
+    connect(m_playerPanel, &PlayerPanel::captureAndExportClicked, this, &MainWindow::onCaptureAndExport);
+    connect(m_playerPanel, &PlayerPanel::toggleRightPanelClicked, this, &MainWindow::onToggleRightPanel);
+    connect(m_playerPanel, &PlayerPanel::timelinePressed, this, [this](){ m_isScrubbing = true; });
+    connect(m_playerPanel, &PlayerPanel::timelineReleased, this, &MainWindow::onTimelineReleased);
+    connect(m_playerPanel, &PlayerPanel::timelineMoved, this, &MainWindow::onTimelineMoved);
+    connect(m_playerPanel, &PlayerPanel::muteClicked, this, &MainWindow::onMuteClicked);
+    connect(m_playerPanel, &PlayerPanel::volumeChanged, this, &MainWindow::onVolumeChanged);
+
+    connect(m_sidePanel, &SidePanel::exportImageRequested, this, &MainWindow::onExportImage);
+    connect(m_sidePanel, &SidePanel::addImagesToLibraryRequested, this, &MainWindow::onAddImagesToLibrary);
+    connect(m_sidePanel, &SidePanel::newImagesDropped, this, &MainWindow::onImagesDroppedOnLibrary);
+    connect(m_sidePanel, &SidePanel::fileDeleted, this, [this](const QString& filePath){
+        m_capturedFramePaths.removeOne(filePath);
+    });
+
+    connect(this, &MainWindow::playerStateChanged, m_playerPanel, &PlayerPanel::updatePlayerState);
+    connect(this, &MainWindow::newFrameReady, this, [this](const FrameData& frameData, qint64 duration, double frameRate, const AVRational& timeBase){
+        if (!m_isScrubbing) {
+            m_playerPanel->updateUIWithFrame(frameData, duration, frameRate, timeBase);
+        }
+    });
+}
+
+void MainWindow::setupVideoWorker()
+{
+    m_videoThread = std::make_unique<QThread>();
+    m_videoWorker = std::make_unique<VideoWorker>();
+    m_videoWorker->moveToThread(m_videoThread.get());
+
+    connect(this, &MainWindow::requestOpenFile, m_videoWorker.get(), &VideoWorker::processOpenFile);
+    connect(this, &MainWindow::requestSeek, m_videoWorker.get(), &VideoWorker::processSeek);
+    connect(this, &MainWindow::requestPlayPause, m_videoWorker.get(), &VideoWorker::processPlayPause);
+    connect(this, &MainWindow::requestNextFrame, m_videoWorker.get(), &VideoWorker::processNextFrame);
+    connect(this, &MainWindow::requestPrevFrame, m_videoWorker.get(), &VideoWorker::processPrevFrame);
+    connect(this, &MainWindow::requestStop, m_videoWorker.get(), &VideoWorker::stop);
+
+    connect(m_videoWorker.get(), &VideoWorker::fileOpened, this, &MainWindow::onFileOpened);
+    connect(m_videoWorker.get(), &VideoWorker::frameReady, this, &MainWindow::onFrameReady);
+    
+    m_videoThread->start();
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveSettings();
     QMainWindow::closeEvent(event);
 }
-
-bool MainWindow::eventFilter(QObject *watched, QEvent *event)
-{
-    if (watched == m_timelineSlider && event->type() == QEvent::MouseMove) {
-        if (m_duration > 0) {
-            QMouseEvent *mouseEvent = static_cast<QMouseEvent*>(event);
-            double pos = mouseEvent->pos().x() / (double)m_timelineSlider->width();
-            int value = m_timelineSlider->minimum() + ((m_timelineSlider->maximum() - m_timelineSlider->minimum()) * pos);
-            
-            value = qBound(m_timelineSlider->minimum(), value, m_timelineSlider->maximum());
-
-            qint64 hoverTimeUs = m_duration * (double)value / 1000.0;
-            QString timeStr = formatTime(hoverTimeUs);
-            QToolTip::showText(mouseEvent->globalPos(), timeStr, m_timelineSlider);
-        }
-        return true;
-    }
-    return QMainWindow::eventFilter(watched, event);
-}
-
 
 void MainWindow::saveSettings()
 {
@@ -143,8 +153,11 @@ void MainWindow::loadSettings()
     QByteArray splitterState = settings.value("splitterState").toByteArray();
     if (!splitterState.isEmpty()) {
         mainSplitter->restoreState(splitterState);
+    } else {
+        QTimer::singleShot(0, this, [this]{
+            mainSplitter->setSizes({width() * 2 / 3, width() / 3});
+        });
     }
-
     m_lastUsedDir = settings.value("lastUsedDir", QDir::homePath()).toString();
 }
 
@@ -165,470 +178,9 @@ void MainWindow::cleanupTempDirectory()
     }
 }
 
-void MainWindow::setupVideoWorker()
-{
-    m_videoThread = std::make_unique<QThread>();
-    m_videoWorker = std::make_unique<VideoWorker>();
-    
-    m_videoWorker->moveToThread(m_videoThread.get());
-
-    connect(this, &MainWindow::requestOpenFile, m_videoWorker.get(), &VideoWorker::processOpenFile);
-    connect(this, &MainWindow::requestSeek, m_videoWorker.get(), &VideoWorker::processSeek);
-    connect(this, &MainWindow::requestPlayPause, m_videoWorker.get(), &VideoWorker::processPlayPause);
-    connect(this, &MainWindow::requestNextFrame, m_videoWorker.get(), &VideoWorker::processNextFrame);
-    connect(this, &MainWindow::requestPrevFrame, m_videoWorker.get(), &VideoWorker::processPrevFrame);
-    connect(this, &MainWindow::requestStop, m_videoWorker.get(), &VideoWorker::stop);
-
-    connect(m_videoWorker.get(), &VideoWorker::fileOpened, this, &MainWindow::onFileOpened);
-    connect(m_videoWorker.get(), &VideoWorker::frameReady, this, &MainWindow::onFrameReady);
-    
-    m_videoThread->start();
-}
-
-
-void MainWindow::setupUi()
-{
-    this->setWindowTitle("Frame Capture v3.6");
-    this->setWindowIcon(QIcon(":/icons/icon.png"));
-    
-    this->resize(1600, 900); 
-
-    mainSplitter = new QSplitter(Qt::Horizontal, this);
-    mainSplitter->setHandleWidth(1);
-    mainSplitter->setStyleSheet("QSplitter::handle { background-color: #606060; }");
-    this->setCentralWidget(mainSplitter);
-
-    QWidget *leftPanel = new QWidget();
-    setupLeftPanel(leftPanel);
-
-    QWidget *rightPanel = new QWidget();
-    setupRightPanel(rightPanel);
-
-    mainSplitter->addWidget(leftPanel);
-    mainSplitter->addWidget(rightPanel);
-}
-
-void MainWindow::setupLeftPanel(QWidget *parent)
-{
-    QGroupBox *playerBox = new QGroupBox("Trình Phát", parent);
-    playerBox->setToolTip("Hiển thị video và các nút điều khiển phát.");
-    playerBox->installEventFilter(m_titleFilter);
-    QVBoxLayout *leftLayout = new QVBoxLayout(playerBox);
-    leftLayout->setContentsMargins(5,5,5,5);
-    leftLayout->setSpacing(5);
-
-    m_videoWidget = new VideoWidget();
-    leftLayout->addWidget(m_videoWidget, 1);
-
-    QHBoxLayout *timelineLayout = new QHBoxLayout();
-    m_timelineSlider = new QSlider(Qt::Horizontal);
-    m_timelineSlider->setRange(0, 1000);
-    m_timelineSlider->setFocusPolicy(Qt::NoFocus);
-    m_timelineSlider->setMouseTracking(true);
-    m_timelineSlider->installEventFilter(this);
-
-    m_timeLabel = new QLabel("00:00.000 / 00:00.000");
-    timelineLayout->addWidget(m_timelineSlider);
-    timelineLayout->addWidget(m_timeLabel);
-    leftLayout->addLayout(timelineLayout);
-
-    QHBoxLayout *controlLayout = new QHBoxLayout();
-    m_prevFrameButton = new QPushButton();
-    m_prevFrameButton->setIcon(style()->standardIcon(QStyle::SP_MediaSeekBackward));
-    m_prevFrameButton->setToolTip("Frame trước (Phím ←)");
-    m_playPauseButton = new QPushButton();
-    m_playPauseButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    m_playPauseButton->setToolTip("Phát/Dừng (Phím Space)");
-    m_nextFrameButton = new QPushButton();
-    m_nextFrameButton->setIcon(style()->standardIcon(QStyle::SP_MediaSeekForward));
-    m_nextFrameButton->setToolTip("Frame kế tiếp (Phím →)");
-    
-    QSize buttonIconSize(36, 36);
-    m_prevFrameButton->setIconSize(buttonIconSize);
-    m_playPauseButton->setIconSize(buttonIconSize);
-    m_nextFrameButton->setIconSize(buttonIconSize);
-
-    m_muteButton = new QPushButton();
-    m_muteButton->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
-    m_muteButton->setToolTip("Tắt/Mở tiếng");
-    m_muteButton->setCheckable(true);
-    m_volumeSlider = new QSlider(Qt::Horizontal);
-    m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setValue(100);
-    m_volumeSlider->setMaximumWidth(80);
-
-    m_captureAndExportButton = new QPushButton("Chụp và Xuất");
-    m_captureAndExportButton->setToolTip("Chụp frame hiện tại và xuất trực tiếp ra file (Ctrl+Space)");
-    m_captureAndExportButton->setStyleSheet("background-color: #27ae60; color: white; border: none; padding: 5px; border-radius: 3px;");
-    
-    m_captureExportAction = new QAction(this);
-    m_captureExportAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Space));
-    connect(m_captureExportAction, &QAction::triggered, this, &MainWindow::onCaptureAndExport);
-    this->addAction(m_captureExportAction);
-
-    m_captureButton = new QPushButton("Chụp");
-    m_captureButton->setToolTip("Chụp frame hiện tại vào thư viện");
-    m_captureButton->setStyleSheet("background-color: #3498db; color: white; border: none; padding: 5px; border-radius: 3px;");
-
-    m_openButton = new QPushButton("Mở Video");
-    m_openButton->setToolTip("Mở một file video mới");
-    m_openButton->setStyleSheet("background-color: #9b59b6; color: white; border: none; padding: 5px; border-radius: 3px;");
-
-    m_toggleRightPanelButton = new QPushButton();
-    m_toggleRightPanelButton->setIcon(style()->standardIcon(QStyle::SP_ArrowLeft));
-    m_toggleRightPanelButton->setToolTip("Mở rộng / Thu gọn panel bên phải");
-    m_toggleRightPanelButton->setCheckable(true);
-    m_toggleRightPanelButton->setChecked(false);
-
-    controlLayout->addWidget(m_prevFrameButton);
-    controlLayout->addWidget(m_playPauseButton);
-    controlLayout->addWidget(m_nextFrameButton);
-    controlLayout->addStretch();
-    controlLayout->addWidget(m_muteButton);
-    controlLayout->addWidget(m_volumeSlider);
-    controlLayout->addSpacing(20);
-    controlLayout->addWidget(m_captureAndExportButton);
-    controlLayout->addWidget(m_captureButton);
-    controlLayout->addWidget(m_openButton);
-    controlLayout->addWidget(m_toggleRightPanelButton);
-    leftLayout->addLayout(controlLayout);
-    
-    QVBoxLayout* parentLayout = new QVBoxLayout(parent);
-    parentLayout->addWidget(playerBox);
-
-    connect(m_openButton, &QPushButton::clicked, this, &MainWindow::onOpenFile);
-    connect(m_captureButton, &QPushButton::clicked, this, &MainWindow::onCapture);
-    connect(m_captureAndExportButton, &QPushButton::clicked, this, &MainWindow::onCaptureAndExport);
-    connect(m_playPauseButton, &QPushButton::clicked, this, &MainWindow::onPlayPause);
-    connect(m_nextFrameButton, &QPushButton::clicked, this, &MainWindow::onNextFrame);
-    connect(m_prevFrameButton, &QPushButton::clicked, this, &MainWindow::onPrevFrame);
-    connect(m_timelineSlider, &QSlider::sliderPressed, this, &MainWindow::onTimelinePressed);
-    connect(m_timelineSlider, &QSlider::sliderReleased, this, &MainWindow::onTimelineReleased);
-    connect(m_timelineSlider, &QSlider::sliderMoved, this, &MainWindow::onTimelineMoved);
-    connect(m_muteButton, &QPushButton::clicked, this, &MainWindow::onMuteClicked);
-    connect(m_volumeSlider, &QSlider::valueChanged, this, &MainWindow::onVolumeChanged);
-    connect(m_toggleRightPanelButton, &QPushButton::clicked, this, &MainWindow::onToggleRightPanel);
-}
-
-QWidget* MainWindow::createVerticalSpinBox(QSpinBox* spinbox) {
-    QWidget *container = new QWidget();
-    QHBoxLayout *layout = new QHBoxLayout(container);
-    layout->setContentsMargins(0,0,0,0);
-    layout->setSpacing(2);
-
-    spinbox->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    
-    QVBoxLayout *buttonLayout = new QVBoxLayout();
-    buttonLayout->setSpacing(0);
-    QToolButton *upButton = new QToolButton();
-    upButton->setArrowType(Qt::UpArrow);
-    upButton->setFixedSize(12, 11);
-    QToolButton *downButton = new QToolButton();
-    downButton->setArrowType(Qt::DownArrow);
-    downButton->setFixedSize(12, 11);
-    buttonLayout->addWidget(upButton);
-    buttonLayout->addWidget(downButton);
-
-    layout->addWidget(spinbox);
-    layout->addLayout(buttonLayout);
-
-    connect(upButton, &QToolButton::clicked, spinbox, &QSpinBox::stepUp);
-    connect(downButton, &QToolButton::clicked, spinbox, &QSpinBox::stepDown);
-    return container;
-}
-
-void MainWindow::setupRightPanel(QWidget *parent)
-{
-    QVBoxLayout *rightLayout = new QVBoxLayout(parent);
-
-    QGroupBox *libraryBox = new QGroupBox("Thư viện", parent);
-    libraryBox->setToolTip("Quản lý các ảnh đã chụp hoặc thêm từ bên ngoài.");
-    libraryBox->installEventFilter(m_titleFilter);
-    QVBoxLayout *libraryLayout = new QVBoxLayout(libraryBox);
-    m_libraryWidget = new LibraryWidget(this);
-    m_libraryDelegate = new LibraryItemDelegate(this);
-    m_libraryWidget->setItemDelegate(m_libraryDelegate);
-    m_libraryWidget->setViewMode(QListWidget::IconMode);
-    m_libraryWidget->setIconSize(QSize(128, 72));
-    m_libraryWidget->setWordWrap(true);
-    m_libraryWidget->setSpacing(2); 
-    m_libraryWidget->setGridSize(QSize(m_libraryWidget->iconSize().width() + 4, m_libraryWidget->iconSize().height() + 4));
-    m_libraryWidget->setStyleSheet("QListWidget::item { padding: 1px; margin: 0px; border: 0px; }");
-    connect(m_libraryWidget, &LibraryWidget::itemQuickExportRequested, this, &MainWindow::onLibraryItemQuickExport);
-    connect(m_libraryWidget, &LibraryWidget::imagesDropped, this, &MainWindow::onImagesDroppedOnLibrary);
-
-    m_addImagesButton = new QPushButton("Thêm");
-    m_addImagesButton->setToolTip("Thêm ảnh từ máy tính vào thư viện");
-    m_addImagesButton->setStyleSheet("background-color: #16a085; color: white; border: none; padding: 5px; border-radius: 3px;");
-
-    m_viewAndCropButton = new QPushButton("Xem");
-    m_viewAndCropButton->setToolTip("Xem & Cắt ảnh đã chọn trong thư viện");
-    m_viewAndCropButton->setStyleSheet("background-color: #2980b9; color: white; border: none; padding: 5px; border-radius: 3px;");
-    m_deleteButton = new QPushButton("Xoá");
-    m_deleteButton->setToolTip("Xoá ảnh đã chọn khỏi thư viện");
-    m_deleteButton->setStyleSheet("background-color: #c0392b; color: white; border: none; padding: 5px; border-radius: 3px;");
-    m_viewAndCropButton->setEnabled(false);
-    m_deleteButton->setEnabled(false);
-
-    QHBoxLayout *libraryButtonsLayout = new QHBoxLayout();
-    libraryButtonsLayout->addStretch();
-    libraryButtonsLayout->addWidget(m_viewAndCropButton);
-    libraryButtonsLayout->addWidget(m_addImagesButton);
-    libraryButtonsLayout->addWidget(m_deleteButton);
-    libraryLayout->addLayout(libraryButtonsLayout);
-    libraryLayout->addWidget(m_libraryWidget);
-
-    QGroupBox *viewBox = new QGroupBox("Xem", parent);
-    viewBox->setToolTip("Hiển thị ảnh ghép từ các ảnh đã chọn trong thư viện.");
-    viewBox->installEventFilter(m_titleFilter);
-    QVBoxLayout *viewLayout = new QVBoxLayout(viewBox);
-    m_viewPanel = new ViewPanel();
-    connect(m_viewPanel, &ViewPanel::scaleChanged, this, &MainWindow::updateViewPanelScaleLabel);
-    connect(m_viewPanel, &ViewPanel::compositedImageSizeChanged, this, &MainWindow::updateViewPanelSizeLabel);
-    
-    QPushButton *cropButton = new QPushButton("Xem");
-    cropButton->setToolTip("Mở cửa sổ xem và cắt ảnh ghép");
-    cropButton->setStyleSheet("background-color: #2980b9; color: white; border: none; padding: 5px; border-radius: 3px;");
-    
-    QPushButton *fitButton = new QPushButton("Vừa khung");
-    fitButton->setToolTip("Thu phóng ảnh vừa với khung xem (95%)");
-    QPushButton *oneToOneButton = new QPushButton("1:1");
-    oneToOneButton->setToolTip("Xem ảnh với kích thước thật (100%)");
-
-    m_viewScaleLabel = new QLineEdit("100%");
-    m_viewScaleLabel->setReadOnly(true);
-    m_viewScaleLabel->setAlignment(Qt::AlignCenter);
-    m_viewScaleLabel->setFixedSize(50, 22);
-    m_viewScaleLabel->setToolTip("Tỉ lệ phóng hiện tại");
-    m_viewScaleLabel->setStyleSheet("background-color: #2c3e50; color: white; border: 1px solid #606060; selection-background-color: transparent;");
-
-    m_viewSizeLabel = new QLineEdit("0x0");
-    m_viewSizeLabel->setReadOnly(true);
-    m_viewSizeLabel->setAlignment(Qt::AlignCenter);
-    m_viewSizeLabel->setFixedWidth(80);
-    m_viewSizeLabel->setToolTip("Kích thước ảnh ghép (pixel)");
-    m_viewSizeLabel->setStyleSheet("background-color: #2c3e50; color: white; border: 1px solid #606060; selection-background-color: transparent;");
-
-    QHBoxLayout *viewControlsLayout = new QHBoxLayout();
-    viewControlsLayout->addWidget(fitButton);
-    viewControlsLayout->addWidget(oneToOneButton);
-    viewControlsLayout->addWidget(m_viewScaleLabel);
-    viewControlsLayout->addWidget(m_viewSizeLabel);
-    viewControlsLayout->addStretch();
-    viewControlsLayout->addWidget(cropButton);
-
-    viewLayout->addLayout(viewControlsLayout);
-    viewLayout->addWidget(m_viewPanel);
-
-    QGroupBox *styleBox = new QGroupBox("Kiểu", parent);
-    styleBox->setToolTip("Tùy chỉnh bố cục và giao diện của ảnh ghép.");
-    styleBox->installEventFilter(m_titleFilter);
-    QVBoxLayout *mainStyleLayout = new QVBoxLayout(styleBox);
-
-    // -- Bố cục --
-    QGroupBox *layoutTypeBox = new QGroupBox("Bố cục");
-    layoutTypeBox->setToolTip("Chọn cách sắp xếp các ảnh ghép.");
-    layoutTypeBox->installEventFilter(m_titleFilter);
-    QHBoxLayout *radioLayout = new QHBoxLayout(layoutTypeBox);
-    m_radioHorizontal = new QRadioButton("Ngang");
-    m_radioVertical = new QRadioButton("Dọc");
-    m_radioGrid = new QRadioButton("Lưới");
-    m_radioHorizontal->setChecked(true);
-    
-    m_gridModeGroup = new QButtonGroup(this);
-    m_gridAutoRadio = new QRadioButton("Tự động");
-    m_gridColumnRadio = new QRadioButton("Cột:");
-    m_gridModeGroup->addButton(m_gridAutoRadio);
-    m_gridModeGroup->addButton(m_gridColumnRadio);
-    m_gridAutoRadio->setChecked(true);
-
-    m_gridColumnCountCombo = new QComboBox();
-    for(int i = 1; i <= 20; ++i) m_gridColumnCountCombo->addItem(QString::number(i));
-    
-    radioLayout->addWidget(m_radioHorizontal);
-    radioLayout->addWidget(m_radioVertical);
-    radioLayout->addWidget(m_radioGrid);
-    radioLayout->addSpacing(20);
-    radioLayout->addWidget(m_gridAutoRadio);
-    radioLayout->addWidget(m_gridColumnRadio);
-    radioLayout->addWidget(m_gridColumnCountCombo);
-    radioLayout->addStretch();
-    mainStyleLayout->addWidget(layoutTypeBox);
-
-    // -- Tùy chỉnh chi tiết --
-    QHBoxLayout* detailLayout = new QHBoxLayout();
-    
-    QGroupBox *sizingBox = new QGroupBox("Kích thước ảnh");
-    sizingBox->setToolTip("Đồng bộ kích thước các ảnh được ghép.");
-    sizingBox->installEventFilter(m_titleFilter);
-    QVBoxLayout *sizingLayout = new QVBoxLayout(sizingBox);
-    m_sizingGroup = new QButtonGroup(this);
-    m_sizeOriginalRadio = new QRadioButton("Gốc");
-    m_sizeMatchFirstRadio = new QRadioButton("Đầu tiên");
-    m_sizeCustomRadio = new QRadioButton("Tuỳ chỉnh");
-    m_sizingGroup->addButton(m_sizeOriginalRadio);
-    m_sizingGroup->addButton(m_sizeMatchFirstRadio);
-    m_sizingGroup->addButton(m_sizeCustomRadio);
-    m_sizeOriginalRadio->setChecked(true);
-    sizingLayout->addWidget(m_sizeOriginalRadio);
-    sizingLayout->addWidget(m_sizeMatchFirstRadio);
-    sizingLayout->addWidget(m_sizeCustomRadio);
-
-    m_customSizeContainer = new QWidget();
-    QHBoxLayout *customSizeLayout = new QHBoxLayout(m_customSizeContainer);
-    customSizeLayout->setContentsMargins(15, 0, 0, 0);
-    m_customWidthSpinBox = new QSpinBox();
-    m_customWidthSpinBox->setRange(10, 8000); m_customWidthSpinBox->setValue(1280);
-    m_customHeightSpinBox = new QSpinBox();
-    m_customHeightSpinBox->setRange(10, 8000); m_customHeightSpinBox->setValue(720);
-    m_customSizeLabelW = new QLabel("Ngang:");
-    m_customSizeLabelH = new QLabel("Cao:");
-    
-    QHBoxLayout* customWLayout = new QHBoxLayout();
-    customWLayout->addWidget(m_customSizeLabelW);
-    customWLayout->addWidget(createVerticalSpinBox(m_customWidthSpinBox));
-    
-    QHBoxLayout* customHLayout = new QHBoxLayout();
-    customHLayout->addWidget(m_customSizeLabelH);
-    customHLayout->addWidget(createVerticalSpinBox(m_customHeightSpinBox));
-
-    customSizeLayout->addLayout(customWLayout);
-    customSizeLayout->addLayout(customHLayout);
-    customSizeLayout->addStretch();
-    sizingLayout->addWidget(m_customSizeContainer);
-    sizingLayout->addStretch();
-    detailLayout->addWidget(sizingBox);
-
-    QGroupBox *decorationBox = new QGroupBox("Trang trí");
-    decorationBox->setToolTip("Thêm viền, bo góc, và các hiệu ứng khác.");
-    decorationBox->installEventFilter(m_titleFilter);
-    QGridLayout *decorationLayout = new QGridLayout(decorationBox);
-    
-    m_borderSpinBox = new QSpinBox();
-    m_borderSpinBox->setRange(0, 200); m_borderSpinBox->setValue(0); m_borderSpinBox->setFixedWidth(40);
-    m_borderSlider = new QSlider(Qt::Horizontal);
-    m_borderSlider->setRange(0, 200);
-    decorationLayout->addWidget(new QLabel("Viền:"), 0, 0);
-    decorationLayout->addWidget(createVerticalSpinBox(m_borderSpinBox), 0, 1);
-    decorationLayout->addWidget(m_borderSlider, 0, 2);
-
-    m_cornerRadiusSpinBox = new QSpinBox();
-    m_cornerRadiusSpinBox->setRange(0, 50); m_cornerRadiusSpinBox->setValue(0); m_cornerRadiusSpinBox->setSuffix("%"); m_cornerRadiusSpinBox->setFixedWidth(40);
-    m_cornerRadiusSlider = new QSlider(Qt::Horizontal);
-    m_cornerRadiusSlider->setRange(0, 50);
-    decorationLayout->addWidget(new QLabel("Bo góc:"), 1, 0);
-    decorationLayout->addWidget(createVerticalSpinBox(m_cornerRadiusSpinBox), 1, 1);
-    decorationLayout->addWidget(m_cornerRadiusSlider, 1, 2);
-
-    m_spacingSpinBox = new QSpinBox();
-    m_spacingSpinBox->setRange(0, 100); m_spacingSpinBox->setValue(0); m_spacingSpinBox->setFixedWidth(40);
-    QSlider* spacingSlider = new QSlider(Qt::Horizontal);
-    spacingSlider->setRange(0, 100);
-    decorationLayout->addWidget(new QLabel("Khoảng cách:"), 2, 0);
-    decorationLayout->addWidget(createVerticalSpinBox(m_spacingSpinBox), 2, 1);
-    decorationLayout->addWidget(spacingSlider, 2, 2);
-
-    QHBoxLayout *bgColorLayout = new QHBoxLayout();
-    m_colorSwatch = new ClickableFrame();
-    m_colorSwatch->setFrameShape(QFrame::Box); m_colorSwatch->setFrameShadow(QFrame::Sunken); m_colorSwatch->setAutoFillBackground(true); m_colorSwatch->setFixedSize(22, 22);
-    QPalette pal = m_colorSwatch->palette(); pal.setColor(QPalette::Window, m_viewPanel->palette().color(QPalette::Window)); m_colorSwatch->setPalette(pal);
-    QPushButton* changeColorButton = new QPushButton("Thay đổi");
-    bgColorLayout->addWidget(m_colorSwatch);
-    bgColorLayout->addWidget(changeColorButton);
-    decorationLayout->addWidget(new QLabel("Nền:"), 3, 0);
-    decorationLayout->addLayout(bgColorLayout, 3, 1, 1, 2);
-    detailLayout->addWidget(decorationBox);
-
-    mainStyleLayout->addLayout(detailLayout);
-
-    QGroupBox *exportBox = new QGroupBox("Xuất", parent);
-    exportBox->setToolTip("Lưu ảnh ghép thành file.");
-    exportBox->installEventFilter(m_titleFilter);
-    QVBoxLayout *exportLayout = new QVBoxLayout(exportBox);
-    m_savePathEdit = new QLineEdit();
-    m_savePathEdit->setReadOnly(true);
-    m_savePathEdit->setToolTip("Thư mục sẽ lưu ảnh xuất ra");
-    QPushButton *changePathButton = new QPushButton("Thay đổi");
-    changePathButton->setToolTip("Chọn thư mục để lưu ảnh");
-    QPushButton *openFolderButton = new QPushButton();
-    openFolderButton->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
-    openFolderButton->setToolTip("Mở thư mục lưu hiện tại");
-    m_exportButton = new QPushButton("Xuất ảnh");
-    m_exportButton->setToolTip("Lưu ảnh ghép trong panel 'Xem' thành file");
-    m_exportButton->setStyleSheet("background-color: #e67e22; color: white; border: none; padding: 5px; border-radius: 3px;");
-    m_formatComboBox = new QComboBox();
-    m_formatComboBox->setToolTip("Chọn định dạng file ảnh để lưu");
-    m_formatComboBox->addItems({"PNG", "JPG", "BMP", "TIFF", "WEBP"});
-
-    QHBoxLayout *saveLineLayout = new QHBoxLayout();
-    saveLineLayout->addWidget(new QLabel("Nơi lưu:"));
-    saveLineLayout->addWidget(m_savePathEdit, 1);
-    saveLineLayout->addWidget(changePathButton);
-    saveLineLayout->addWidget(openFolderButton);
-
-    QHBoxLayout *formatLineLayout = new QHBoxLayout();
-    formatLineLayout->addWidget(new QLabel("Định dạng:"));
-    formatLineLayout->addWidget(m_formatComboBox);
-    formatLineLayout->addStretch();
-    formatLineLayout->addWidget(m_exportButton);
-
-    exportLayout->addLayout(saveLineLayout);
-    exportLayout->addLayout(formatLineLayout);
-
-    rightLayout->addWidget(libraryBox, 2);
-    rightLayout->addWidget(viewBox, 4);
-    rightLayout->addWidget(styleBox, 0);
-    rightLayout->addWidget(exportBox, 0);
-
-    m_viewPanel->setSpacing(m_spacingSpinBox->value());
-    m_viewPanel->setBorder(m_borderSpinBox->value());
-    m_viewPanel->setCornerRadius(m_cornerRadiusSpinBox->value());
-
-    connect(m_libraryWidget, &QListWidget::itemChanged, this, &MainWindow::onLibraryItemChanged);
-    connect(m_libraryWidget, &QListWidget::itemSelectionChanged, this, &MainWindow::onLibrarySelectionChanged);
-    connect(m_addImagesButton, &QPushButton::clicked, this, &MainWindow::onAddImagesToLibrary);
-    connect(m_viewAndCropButton, &QPushButton::clicked, this, &MainWindow::onViewAndCropSelected);
-    connect(m_deleteButton, &QPushButton::clicked, this, &MainWindow::onDeleteSelected);
-    connect(cropButton, &QPushButton::clicked, this, &MainWindow::onViewPanelCrop);
-    connect(fitButton, &QPushButton::clicked, m_viewPanel, &ViewPanel::fitToWindow);
-    connect(oneToOneButton, &QPushButton::clicked, m_viewPanel, &ViewPanel::setOneToOne);
-    connect(m_radioHorizontal, &QRadioButton::toggled, this, &MainWindow::onStyleChanged);
-    connect(m_radioVertical, &QRadioButton::toggled, this, &MainWindow::onStyleChanged);
-    connect(m_radioGrid, &QRadioButton::toggled, this, &MainWindow::onStyleChanged);
-    connect(m_gridModeGroup, &QButtonGroup::buttonClicked, this, &MainWindow::onGridModeChanged);
-    connect(m_gridColumnCountCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onGridModeChanged);
-    
-    connect(m_sizingGroup, &QButtonGroup::buttonClicked, this, &MainWindow::onSizingModeChanged);
-    connect(m_customWidthSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onSizingModeChanged);
-    connect(m_customHeightSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onSizingModeChanged);
-
-    connect(m_spacingSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), spacingSlider, &QSlider::setValue);
-    connect(spacingSlider, &QSlider::valueChanged, m_spacingSpinBox, &QSpinBox::setValue);
-    connect(spacingSlider, &QSlider::valueChanged, m_viewPanel, &ViewPanel::setSpacing);
-    
-    connect(m_borderSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), m_borderSlider, &QSlider::setValue);
-    connect(m_borderSlider, &QSlider::valueChanged, m_borderSpinBox, &QSpinBox::setValue);
-    connect(m_borderSlider, &QSlider::valueChanged, this, &MainWindow::onBorderSliderChanged);
-    
-    connect(m_cornerRadiusSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), m_cornerRadiusSlider, &QSlider::setValue);
-    connect(m_cornerRadiusSlider, &QSlider::valueChanged, m_cornerRadiusSpinBox, &QSpinBox::setValue);
-    connect(m_cornerRadiusSlider, &QSlider::valueChanged, this, &MainWindow::onCornerRadiusSliderChanged);
-
-    connect(changeColorButton, &QPushButton::clicked, this, &MainWindow::onChooseBackgroundColor);
-    connect(m_colorSwatch, &ClickableFrame::clicked, this, &MainWindow::onChooseBackgroundColor);
-    connect(changePathButton, &QPushButton::clicked, this, &MainWindow::onChooseSavePath);
-    connect(openFolderButton, &QPushButton::clicked, this, &MainWindow::onOpenSaveFolder);
-    connect(m_exportButton, &QPushButton::clicked, this, &MainWindow::onExport);
-
-    onStyleChanged();
-    onSizingModeChanged();
-}
-
-// --- Các slot xử lý tín hiệu từ Worker ---
-
 void MainWindow::onFileOpened(bool success, VideoProcessor::AudioParams params, double frameRate, qint64 duration, AVRational timeBase)
 {
-    updatePlayerState(success);
+    emit playerStateChanged(success);
 
     if (success) {
         m_frameRate = frameRate;
@@ -647,12 +199,10 @@ void MainWindow::onFileOpened(bool success, VideoProcessor::AudioParams params, 
                  QMessageBox::warning(this, "Lỗi Âm thanh", "Không tìm thấy thiết bị âm thanh mặc định.");
             } else {
                 m_audioSink = new QAudioSink(devices, format);
-                
-                int bufferSize = params.sample_rate * params.channels * (16 / 8) * 0.8; 
+                int bufferSize = params.sample_rate * params.channels * (16 / 8) * 2.0; 
                 m_audioSink->setBufferSize(bufferSize);
-
                 m_audioDevice = m_audioSink->start();
-                onVolumeChanged(m_volumeSlider->value());
+                onVolumeChanged(100); 
             }
         }
     } else {
@@ -662,51 +212,28 @@ void MainWindow::onFileOpened(bool success, VideoProcessor::AudioParams params, 
 
 void MainWindow::onFrameReady(const FrameData &frameData)
 {
-    updateUIWithFrame(frameData);
-}
-
-
-// --- Các slot xử lý sự kiện UI ---
-
-void MainWindow::ensureRightPanelVisible()
-{
-    if (m_toggleRightPanelButton->isChecked()) { 
-        m_toggleRightPanelButton->setChecked(false);
-        onToggleRightPanel();
+    emit newFrameReady(frameData, m_duration, m_frameRate, m_timeBase);
+    if(m_audioDevice && !frameData.audioData.isEmpty()) {
+        m_audioDevice->write(frameData.audioData);
     }
 }
-
-void MainWindow::onToggleRightPanel()
-{
-    QList<int> sizes = mainSplitter->sizes();
-    if (sizes.count() == 2) {
-        if (m_toggleRightPanelButton->isChecked()) { 
-            mainSplitter->setSizes({sizes[0] + sizes[1], 0});
-            m_toggleRightPanelButton->setIcon(style()->standardIcon(QStyle::SP_ArrowRight));
-        } else {
-            mainSplitter->setSizes({width() * 2 / 3, width() / 3});
-            m_toggleRightPanelButton->setIcon(style()->standardIcon(QStyle::SP_ArrowLeft));
-        }
-    }
-}
-
-void MainWindow::updateViewPanelScaleLabel(double scale)
-{
-    m_viewScaleLabel->setText(QString::number(qRound(scale * 100)) + "%");
-}
-
-void MainWindow::updateViewPanelSizeLabel(const QSize &size)
-{
-    m_viewSizeLabel->setText(QString("%1x%2").arg(size.width()).arg(size.height()));
-}
-
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
-    // SỬA LỖI KÉO-THẢ: Chỉ chấp nhận nếu không kéo vào thư viện
-    if (!m_libraryWidget->geometry().contains(event->pos())) {
-        if (event->mimeData()->hasUrls()) {
+    if (!event->mimeData()->hasUrls()) {
+        event->ignore();
+        return;
+    }
+    const QUrl url = event->mimeData()->urls().first();
+    const QFileInfo fileInfo(url.toLocalFile());
+    const QString suffix = fileInfo.suffix().toLower();
+    const bool isVideo = (suffix == "mp4" || suffix == "avi" || suffix == "mkv" || suffix == "mov");
+
+    if (isVideo) {
+        if (!m_sidePanel->getLibraryWidget()->rect().contains(m_sidePanel->getLibraryWidget()->mapFromGlobal(QCursor::pos()))) {
             event->acceptProposedAction();
+        } else {
+            event->ignore();
         }
     } else {
         event->ignore();
@@ -719,6 +246,9 @@ void MainWindow::dropEvent(QDropEvent *event)
     if (!urls.isEmpty()) {
         QString filePath = urls.first().toLocalFile();
         openVideoFile(filePath);
+        event->acceptProposedAction();
+    } else {
+        event->ignore();
     }
 }
 
@@ -734,11 +264,11 @@ void MainWindow::keyPressEvent(QKeyEvent *event)
         event->accept();
         break;
     case Qt::Key_Right: 
-        onNextFrame(); 
+        emit requestNextFrame();
         event->accept();
         break;
     case Qt::Key_Left: 
-        onPrevFrame(); 
+        emit requestPrevFrame();
         event->accept();
         break;
     default: 
@@ -752,10 +282,10 @@ void MainWindow::openVideoFile(const QString& filePath)
     setupTempDirectory();
 
     m_currentVideoPath = filePath;
-    m_savePathEdit->setText(QFileInfo(filePath).absolutePath());
-    m_libraryWidget->clear();
+    m_sidePanel->getExportPanel()->setSavePath(QFileInfo(filePath).absolutePath());
+    m_sidePanel->getLibraryWidget()->clear();
     m_capturedFramePaths.clear();
-    m_viewPanel->setImages({});
+    m_sidePanel->getViewPanel()->setImages({});
     emit requestOpenFile(filePath);
 }
 
@@ -771,71 +301,30 @@ void MainWindow::onOpenFile()
 void MainWindow::onPlayPause()
 {
     m_isPlaying = !m_isPlaying;
-    if (m_isPlaying) {
-        m_playPauseButton->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
-    } else {
-        m_playPauseButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    }
+    m_playerPanel->setPlayPauseButtonIcon(m_isPlaying);
     emit requestPlayPause(m_isPlaying);
     this->setFocus();
 }
 
-void MainWindow::onNextFrame() 
-{
-    emit requestNextFrame();
-    this->setFocus();
-}
-
-void MainWindow::onPrevFrame()
-{
-    emit requestPrevFrame();
-    this->setFocus();
-}
-
-void MainWindow::onTimelinePressed()
-{
-    m_isScrubbing = true;
-    if (m_isPlaying) {
-        emit requestPlayPause(false);
-    }
-}
-
-void MainWindow::onTimelineReleased()
-{
-    m_isScrubbing = false;
-    onTimelineMoved(m_timelineSlider->value());
-    if (m_isPlaying) {
-        emit requestPlayPause(true);
-    }
-    this->setFocus();
-}
-
-void MainWindow::onTimelineMoved(int position)
-{
-    if (m_duration > 0) {
-        qint64 targetTime = m_duration * (double)position / 1000.0;
-        emit requestSeek(targetTime);
-    }
-}
-
-
 void MainWindow::onCapture()
 {
-    QImage currentFrame = m_videoWidget->getCurrentImage();
+    QImage currentFrame = m_playerPanel->getVideoWidget()->getCurrentImage();
     if (!currentFrame.isNull()) {
-        QString fileName = QUuid::createUuid().toString() + ".png";
-        QString filePath = QDir(m_tempPath).filePath(fileName);
-        
-        if (currentFrame.save(filePath, "PNG")) {
-            addImageToList(filePath);
-        }
+        QThreadPool::globalInstance()->start([this, currentFrame]() {
+            QString fileName = QUuid::createUuid().toString() + ".png";
+            QString filePath = QDir(m_tempPath).filePath(fileName);
+            if (currentFrame.save(filePath, "PNG")) {
+                QMetaObject::invokeMethod(this, "addImageToList", Qt::QueuedConnection,
+                                          Q_ARG(QString, filePath));
+            }
+        });
     }
     this->setFocus();
 }
 
 void MainWindow::onCaptureAndExport()
 {
-    QImage currentFrame = m_videoWidget->getCurrentImage();
+    QImage currentFrame = m_playerPanel->getVideoWidget()->getCurrentImage();
     if (!currentFrame.isNull()) {
         onExportImage(currentFrame);
     }
@@ -844,12 +333,6 @@ void MainWindow::onCaptureAndExport()
 
 void MainWindow::onMuteClicked()
 {
-    if (m_volumeSlider->value() > 0) {
-        m_lastVolume = m_volumeSlider->value() / 100.0f;
-        m_volumeSlider->setValue(0);
-    } else {
-        m_volumeSlider->setValue(m_lastVolume * 100);
-    }
 }
 
 void MainWindow::onVolumeChanged(int volume)
@@ -857,119 +340,77 @@ void MainWindow::onVolumeChanged(int volume)
     if (m_audioSink) {
         m_audioSink->setVolume(volume / 100.0f);
     }
-    
-    bool isMutedNow = (volume == 0);
-    m_muteButton->setChecked(isMutedNow);
-    m_muteButton->setIcon(style()->standardIcon(isMutedNow ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
-
-    if (!isMutedNow) {
+    if (volume > 0) {
         m_lastVolume = volume / 100.0f;
     }
 }
 
-void MainWindow::onLibrarySelectionChanged()
+void MainWindow::onToggleRightPanel()
 {
-    bool hasSelection = !m_libraryWidget->selectedItems().isEmpty();
-    m_viewAndCropButton->setEnabled(hasSelection);
-    m_deleteButton->setEnabled(hasSelection);
-}
-
-void MainWindow::onViewAndCropSelected()
-{
-    QList<QListWidgetItem*> selected = m_libraryWidget->selectedItems();
-    if (selected.isEmpty()) return;
-
-    QListWidgetItem* item = selected.first();
-    QString filePath = item->data(Qt::UserRole).toString();
-    QImage imageToCrop(filePath);
-
-    if (!imageToCrop.isNull()) {
-        CropDialog dialog(imageToCrop, this);
-        connect(&dialog, &CropDialog::exportImageRequested, this, &MainWindow::onExportImage);
-        
-        if (dialog.exec() == QDialog::Accepted) {
-            QImage finalImage = dialog.getFinalImage();
-            if (!finalImage.isNull()) {
-                QThreadPool::globalInstance()->start([this, filePath, finalImage]() {
-                    bool success = finalImage.save(filePath, "PNG");
-                    QMetaObject::invokeMethod(this, "onCroppedImageSaveFinished", Qt::QueuedConnection,
-                                              Q_ARG(bool, success),
-                                              Q_ARG(QString, filePath),
-                                              Q_ARG(QImage, finalImage));
-                });
-            }
+    QList<int> sizes = mainSplitter->sizes();
+    if (sizes.count() == 2) {
+        bool isHidden = mainSplitter->widget(1)->width() == 0;
+        if (isHidden) {
+             mainSplitter->setSizes({width() * 2 / 3, width() / 3});
+        } else {
+             mainSplitter->setSizes({sizes[0] + sizes[1], 0});
         }
     }
 }
 
-void MainWindow::onCroppedImageSaveFinished(bool success, const QString& filePath, const QImage& savedImage)
+void MainWindow::onTimelineMoved(int position)
 {
-    if (success) {
-        for (int i = 0; i < m_libraryWidget->count(); ++i) {
-            QListWidgetItem* item = m_libraryWidget->item(i);
-            if (item->data(Qt::UserRole).toString() == filePath) {
-                QPixmap thumbnail = QPixmap::fromImage(savedImage.scaled(m_libraryWidget->iconSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                item->setIcon(QIcon(thumbnail));
-                onLibraryItemChanged(item);
-                break;
-            }
+    if (m_duration > 0) {
+        qint64 time = m_duration * (double)position / 1000.0;
+        m_playerPanel->updateTimeLabelOnly(time, m_duration, m_frameRate);
+        // Chỉ gửi yêu cầu seek khi người dùng đang kéo thả
+        if (m_isScrubbing) {
+            emit requestSeek(time);
         }
+    }
+}
+
+void MainWindow::onTimelineReleased()
+{
+    m_isScrubbing = false;
+    if (m_isPlaying) {
+        emit requestPlayPause(true);
+    }
+    this->setFocus();
+}
+
+void MainWindow::onExportImage(const QImage& image) 
+{
+    if (image.isNull()) {
+        QMessageBox::warning(this, "Lỗi", "Không có ảnh để xuất.");
+        return;
+    }
+    ExportPanel* exportPanel = m_sidePanel->getExportPanel();
+    QString savePath = exportPanel->getSavePath();
+    if (savePath.isEmpty()) {
+        savePath = QFileDialog::getExistingDirectory(this, "Chọn thư mục lưu");
+        if(savePath.isEmpty()) return;
+        exportPanel->setSavePath(savePath);
+    }
+    
+    QString format = exportPanel->getSelectedFormat().toLower();
+    QString baseName = QFileInfo(m_currentVideoPath).baseName();
+    if (baseName.isEmpty()) {
+        baseName = "capture";
+    }
+    QString fullPath = generateUniqueFilename(baseName, format);
+
+    if (image.save(fullPath)) {
+        QMessageBox::information(this, "Thành công", "Đã lưu ảnh tại:\n" + fullPath);
     } else {
-        QMessageBox::critical(this, "Lỗi", "Không thể lưu ảnh đã cắt.");
-    }
-}
-
-void MainWindow::onDeleteSelected()
-{
-    QList<QListWidgetItem*> selected = m_libraryWidget->selectedItems();
-    if (selected.isEmpty()) return;
-
-    int ret = QMessageBox::question(this, "Xác nhận xoá", "Bạn có chắc muốn xoá ảnh đã chọn?", QMessageBox::Yes | QMessageBox::No);
-
-    if (ret == QMessageBox::Yes) {
-        QListWidgetItem* item = selected.first();
-        QString filePath = item->data(Qt::UserRole).toString();
-        
-        QThreadPool::globalInstance()->start([this, filePath, item]() {
-            bool success = QFile::remove(filePath);
-            QMetaObject::invokeMethod(this, "onFileDeletionFinished", Qt::QueuedConnection,
-                                      Q_ARG(bool, success),
-                                      Q_ARG(QString, filePath),
-                                      Q_ARG(QListWidgetItem*, item));
-        });
-    }
-}
-
-void MainWindow::onFileDeletionFinished(bool success, const QString& filePath, QListWidgetItem* item)
-{
-    if (success) {
-        m_capturedFramePaths.removeOne(filePath);
-        delete m_libraryWidget->takeItem(m_libraryWidget->row(item));
-        onLibraryItemChanged(nullptr);
-    } else {
-        QMessageBox::critical(this, "Lỗi", "Không thể xoá file: " + filePath);
-    }
-}
-
-void MainWindow::onLibraryItemQuickExport(QListWidgetItem *item)
-{
-    if (!item) return;
-    QString filePath = item->data(Qt::UserRole).toString();
-    QImage imageToExport(filePath);
-    if (!imageToExport.isNull()) {
-        onExportImage(imageToExport);
+        QMessageBox::critical(this, "Lỗi", "Không thể lưu ảnh.");
     }
 }
 
 void MainWindow::onAddImagesToLibrary()
 {
     QStringList filePaths = QFileDialog::getOpenFileNames(
-        this, 
-        "Thêm ảnh vào thư viện", 
-        m_lastUsedDir, 
-        "Image Files (*.png *.jpg *.jpeg *.bmp)"
-    );
-
+        this, "Thêm ảnh vào thư viện", m_lastUsedDir, "Image Files (*.png *.jpg *.jpeg *.bmp)");
     for (const QString &path : filePaths) {
         QString newFileName = QUuid::createUuid().toString() + "." + QFileInfo(path).suffix();
         QString newPath = QDir(m_tempPath).filePath(newFileName);
@@ -991,176 +432,6 @@ void MainWindow::onImagesDroppedOnLibrary(const QList<QUrl> &urls)
     }
 }
 
-void MainWindow::onLibraryItemChanged(QListWidgetItem *item)
-{
-    Q_UNUSED(item);
-    QList<QImage> checkedImages;
-    for (int i = 0; i < m_libraryWidget->count(); ++i) {
-        QListWidgetItem* currentItem = m_libraryWidget->item(i);
-        if (currentItem->checkState() == Qt::Checked) {
-            QString filePath = currentItem->data(Qt::UserRole).toString();
-            checkedImages.append(QImage(filePath));
-        }
-    }
-    m_viewPanel->setImages(checkedImages);
-}
-
-void MainWindow::onViewPanelCrop()
-{
-    QImage imageToCrop = m_viewPanel->getCompositedImage();
-    if (imageToCrop.isNull()) {
-        QMessageBox::information(this, "Thông báo", "Không có ảnh nào trong vùng xem để cắt.");
-        return;
-    }
-    CropDialog dialog(imageToCrop, this);
-    connect(&dialog, &CropDialog::exportImageRequested, this, &MainWindow::onExportImage);
-
-    if (dialog.exec() == QDialog::Accepted) {
-        QImage finalImage = dialog.getFinalImage();
-        if(!finalImage.isNull()) {
-            m_viewPanel->setImages({finalImage});
-            m_viewPanel->fitToWindow();
-        }
-    }
-}
-
-void MainWindow::onStyleChanged()
-{
-    bool isGrid = m_radioGrid->isChecked();
-    m_gridAutoRadio->setEnabled(isGrid);
-    m_gridColumnRadio->setEnabled(isGrid);
-    m_gridColumnCountCombo->setEnabled(isGrid && m_gridColumnRadio->isChecked());
-
-    m_viewPanel->setLayoutType(m_radioHorizontal->isChecked() ? ViewPanel::Horizontal :
-                               m_radioVertical->isChecked() ? ViewPanel::Vertical :
-                               ViewPanel::Grid);
-    onGridModeChanged();
-    onSizingModeChanged();
-}
-
-void MainWindow::onGridModeChanged()
-{
-    if (!m_radioGrid->isChecked()) {
-        m_viewPanel->setGridColumnCount(0); // Tắt chế độ cột
-        return;
-    }
-    m_gridColumnCountCombo->setEnabled(m_gridColumnRadio->isChecked());
-    if (m_gridColumnRadio->isChecked()) {
-        m_viewPanel->setGridColumnCount(m_gridColumnCountCombo->currentText().toInt());
-    } else {
-        m_viewPanel->setGridColumnCount(0); // 0 = tự động
-    }
-}
-
-
-void MainWindow::onSizingModeChanged()
-{
-    bool isCustom = m_sizeCustomRadio->isChecked();
-    m_customSizeContainer->setVisible(isCustom);
-
-    if (m_radioHorizontal->isChecked()) {
-        m_sizeCustomRadio->setText("Cao");
-        m_customSizeLabelW->hide();
-        m_customWidthSpinBox->hide();
-        m_customSizeLabelH->show();
-        m_customHeightSpinBox->show();
-    } else if (m_radioVertical->isChecked()) {
-        m_sizeCustomRadio->setText("Ngang");
-        m_customSizeLabelW->show();
-        m_customWidthSpinBox->show();
-        m_customSizeLabelH->hide();
-        m_customHeightSpinBox->hide();
-    } else { // Grid
-        m_sizeCustomRadio->setText("Cỡ");
-        m_customSizeLabelW->show();
-        m_customWidthSpinBox->show();
-        m_customSizeLabelH->show();
-        m_customHeightSpinBox->show();
-    }
-
-    if (m_sizeOriginalRadio->isChecked()) {
-        m_viewPanel->setSizingMode(ViewPanel::Original);
-    } else if (m_sizeMatchFirstRadio->isChecked()) {
-        m_viewPanel->setSizingMode(ViewPanel::MatchFirst);
-    } else { // Custom
-        m_viewPanel->setSizingMode(ViewPanel::Custom);
-        m_viewPanel->setCustomSize(m_customWidthSpinBox->value(), m_customHeightSpinBox->value());
-    }
-}
-
-
-void MainWindow::onExport() 
-{
-    QImage finalImage = m_viewPanel->getCompositedImage();
-    onExportImage(finalImage);
-}
-
-void MainWindow::onExportImage(const QImage& image) 
-{
-    if (image.isNull()) {
-        QMessageBox::warning(this, "Lỗi", "Không có ảnh để xuất.");
-        return;
-    }
-    QString savePath = m_savePathEdit->text();
-    if (savePath.isEmpty()) {
-        savePath = QFileDialog::getExistingDirectory(this, "Chọn thư mục lưu");
-        if(savePath.isEmpty()) return;
-        m_savePathEdit->setText(savePath);
-    }
-    
-    QString format = m_formatComboBox->currentText().toLower();
-    QString baseName = QFileInfo(m_currentVideoPath).baseName();
-    if (baseName.isEmpty()) {
-        baseName = "capture";
-    }
-    QString fullPath = generateUniqueFilename(baseName, format);
-
-    if (image.save(fullPath)) {
-        QMessageBox::information(this, "Thành công", "Đã lưu ảnh tại:\n" + fullPath);
-    } else {
-        QMessageBox::critical(this, "Lỗi", "Không thể lưu ảnh.");
-    }
-}
-
-void MainWindow::onChooseSavePath()
-{
-    QString dir = QFileDialog::getExistingDirectory(this, "Chọn thư mục lưu");
-    if (!dir.isEmpty()) {
-        m_savePathEdit->setText(dir);
-    }
-}
-
-void MainWindow::onOpenSaveFolder()
-{
-    QString path = m_savePathEdit->text();
-    if (!path.isEmpty()) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
-    }
-}
-
-void MainWindow::updateTimeLabel(int64_t currentTimeUs, int64_t totalTimeUs)
-{
-    QString timeStr = formatTime(currentTimeUs);
-    QString durationStr = formatTime(totalTimeUs);
-    if (m_frameRate == 0) return;
-    long long currentFrame = (currentTimeUs / 1000000.0) * m_frameRate;
-    long long totalFrames = (totalTimeUs / 1000000.0) * m_frameRate;
-    m_timeLabel->setText(QString("%1 (Frame %2) / %3 (Frame %4)").arg(timeStr).arg(currentFrame).arg(durationStr).arg(totalFrames));
-}
-
-QString MainWindow::formatTime(int64_t timeUs)
-{
-    int totalMilliseconds = timeUs / 1000;
-    int seconds = (totalMilliseconds / 1000) % 60;
-    int minutes = (totalMilliseconds / (1000 * 60)) % 60;
-    int hours = (totalMilliseconds / (1000 * 60 * 60));
-    int milliseconds = totalMilliseconds % 1000;
-    if (hours > 0)
-        return QString("%1:%2:%3.%4").arg(hours, 2, 10, QChar('0')).arg(minutes, 2, 10, QChar('0')).arg(seconds, 2, 10, QChar('0')).arg(milliseconds, 3, 10, QChar('0'));
-    else
-        return QString("%1:%2.%3").arg(minutes, 2, 10, QChar('0')).arg(seconds, 2, 10, QChar('0')).arg(milliseconds, 3, 10, QChar('0'));
-}
-
 void MainWindow::cleanupAudio()
 {
     if(m_audioSink) {
@@ -1173,7 +444,7 @@ void MainWindow::cleanupAudio()
 
 QString MainWindow::generateUniqueFilename(const QString& baseName, const QString& extension)
 {
-    QString savePath = m_savePathEdit->text();
+    QString savePath = m_sidePanel->getExportPanel()->getSavePath();
     QString fullPath = QDir(savePath).filePath(baseName + "." + extension);
     int counter = 1;
     while (QFile::exists(fullPath)) {
@@ -1183,81 +454,26 @@ QString MainWindow::generateUniqueFilename(const QString& baseName, const QStrin
     return fullPath;
 }
 
-void MainWindow::updateUIWithFrame(const FrameData& frameData)
+void MainWindow::ensureRightPanelVisible()
 {
-    if (!frameData.image.isNull()) {
-        m_videoWidget->setImage(frameData.image);
-        m_currentPts = frameData.pts;
-        if (m_timeBase.den == 0) return;
-        int64_t currentTimeUs = m_currentPts * 1000000 * m_timeBase.num / m_timeBase.den;
-        updateTimeLabel(currentTimeUs, m_duration);
-        if (!m_isScrubbing) {
-            m_timelineSlider->blockSignals(true);
-            if (m_duration > 0) {
-                m_timelineSlider->setValue((double)currentTimeUs / m_duration * 1000);
-            }
-            m_timelineSlider->blockSignals(false);
-        }
+    if (mainSplitter->widget(1)->width() == 0) {
+        onToggleRightPanel();
     }
-    if(m_audioDevice && !frameData.audioData.isEmpty()) {
-        m_audioDevice->write(frameData.audioData);
-    }
-}
-
-void MainWindow::onCornerRadiusSliderChanged(int value)
-{
-    m_viewPanel->setCornerRadius(value);
-}
-
-void MainWindow::onBorderSliderChanged(int value)
-{
-    m_viewPanel->setBorder(value);
-}
-
-void MainWindow::onChooseBackgroundColor()
-{
-    QColor color = QColorDialog::getColor(m_viewPanel->palette().window().color(), this, "Chọn màu nền");
-    if (color.isValid()) {
-        m_viewPanel->setBackgroundColor(color);
-        QPalette pal = m_colorSwatch->palette();
-        pal.setColor(QPalette::Window, color);
-        m_colorSwatch->setPalette(pal);
-    }
-}
-
-void MainWindow::updatePlayerState(bool isVideoLoaded)
-{
-    m_playPauseButton->setEnabled(isVideoLoaded);
-    m_nextFrameButton->setEnabled(isVideoLoaded);
-    m_prevFrameButton->setEnabled(isVideoLoaded);
-    m_timelineSlider->setEnabled(isVideoLoaded);
-    m_captureButton->setEnabled(isVideoLoaded);
-    m_captureAndExportButton->setEnabled(isVideoLoaded);
-    m_captureExportAction->setEnabled(isVideoLoaded);
-    m_exportButton->setEnabled(isVideoLoaded);
 }
 
 void MainWindow::addImageToList(const QString &imagePath)
 {
     ensureRightPanelVisible();
-
     QImage image(imagePath);
     if (image.isNull()) return;
-
     m_capturedFramePaths.append(imagePath);
     
-    QImage scaledImage = image.scaled(m_libraryWidget->iconSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    QPixmap thumbnailPixmap(m_libraryWidget->iconSize());
-    thumbnailPixmap.fill(Qt::transparent);
-    QPainter painter(&thumbnailPixmap);
-    int x = (thumbnailPixmap.width() - scaledImage.width()) / 2;
-    int y = (thumbnailPixmap.height() - scaledImage.height()) / 2;
-    painter.drawImage(x, y, scaledImage);
-    painter.end();
+    LibraryWidget* libraryWidget = m_sidePanel->getLibraryWidget();
+    QPixmap thumbnailPixmap = QPixmap::fromImage(image.scaled(libraryWidget->iconSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
     
     QListWidgetItem *item = new QListWidgetItem(QIcon(thumbnailPixmap), "");
     item->setData(Qt::UserRole, imagePath); 
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
     item->setCheckState(Qt::Unchecked);
-    m_libraryWidget->addItem(item);
+    libraryWidget->addItem(item);
 }

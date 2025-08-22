@@ -1,4 +1,4 @@
-// librarywidget.h - Version 1.4 (Drag & Drop Added)
+// librarywidget.h - Version 1.7 (Thêm Double Click)
 #ifndef LIBRARYWIDGET_H
 #define LIBRARYWIDGET_H
 
@@ -17,12 +17,12 @@ public:
 
 signals:
     void itemQuickExportRequested(QListWidgetItem *item);
-    // THÊM MỚI: Signal cho chức năng kéo-thả
     void imagesDropped(const QList<QUrl> &urls);
+    // THÊM MỚI: Tín hiệu cho double-click chuột trái
+    void itemDoubleClicked(QListWidgetItem* item);
 
 protected:
     void mouseDoubleClickEvent(QMouseEvent *event) override;
-    // THÊM MỚI: Ghi đè các sự kiện kéo-thả
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;

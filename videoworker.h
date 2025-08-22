@@ -1,10 +1,10 @@
-// videoworker.h - Version 1.2 (Modernized with std::unique_ptr)
+// videoworker.h - Version 1.3 (Thêm cờ isSeeking)
 #ifndef VIDEOWORKER_H
 #define VIDEOWORKER_H
 
 #include <QObject>
 #include <QTimer>
-#include <memory> // Thêm thư viện để sử dụng std::unique_ptr
+#include <memory> 
 #include "videoprocessor.h"
 
 class VideoWorker : public QObject
@@ -32,11 +32,12 @@ private slots:
     void onPlaybackTimerTimeout();
 
 private:
-    // THAY ĐỔI: Sử dụng con trỏ thông minh để quản lý bộ nhớ tự động
     std::unique_ptr<VideoProcessor> m_processor;
     QTimer *m_playbackTimer;
     bool m_isPlaying = false;
     qint64 m_currentPts = 0;
+    // THÊM MỚI: Cờ để ngăn xung đột khi đang tua video
+    std::atomic<bool> m_isSeeking = false;
 };
 
 #endif // VIDEOWORKER_H

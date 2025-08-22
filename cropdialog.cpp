@@ -1,4 +1,4 @@
-// cropdialog.cpp - Version 4.8 (Arrow Key Fix & Size Display)
+// cropdialog.cpp - Version 5.0 (Sửa lỗi 16:9)
 #include "cropdialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -92,6 +92,13 @@ void CropArea::moveSelection(int dx, int dy)
         emitSelectionSize();
         update();
     }
+}
+
+void CropArea::setSelection(const QRect& rect)
+{
+    m_selectionRect = QRectF(rect);
+    emitSelectionSize();
+    update();
 }
 
 void CropArea::emitSelectionSize()
@@ -309,7 +316,6 @@ CropDialog::CropDialog(const QImage &image, QWidget *parent)
     m_cropArea->setImage(m_currentImage);
     setWindowTitle("Xem & Cắt ảnh"); 
     resize(800, 600);
-    // SỬA LỖI FOCUS: Cài đặt bộ lọc sự kiện
     this->installEventFilter(this);
 }
 
@@ -318,17 +324,13 @@ QImage CropDialog::getFinalImage() const
     return m_currentImage;
 }
 
-// SỬA LỖI FOCUS: Ghi đè eventFilter để bắt phím bấm
 bool CropDialog::eventFilter(QObject *watched, QEvent *event)
 {
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
-        // Chuyển sự kiện phím bấm tới hàm keyPressEvent để xử lý
         keyPressEvent(keyEvent);
-        // Trả về true để báo rằng sự kiện đã được xử lý
         return true; 
     }
-    // Chuyển các sự kiện khác cho lớp cơ sở
     return QDialog::eventFilter(watched, event);
 }
 
@@ -355,7 +357,6 @@ void CropDialog::keyPressEvent(QKeyEvent *event)
         applyCrop();
         break;
     default:
-        // Không gọi QDialog::keyPressEvent để tránh các hành vi mặc định không mong muốn
         event->ignore();
         break;
     }
@@ -367,7 +368,36 @@ void CropDialog::showEvent(QShowEvent *event)
     QDialog::showEvent(event);
     m_cropArea->setFocus();
     fitToWindow();
+    QTimer::singleShot(0, this, &CropDialog::createDefaultSelection);
 }
+
+void CropDialog::createDefaultSelection()
+{
+    if (m_currentImage.isNull()) return;
+
+    if (m_cropArea->getSelection().isValid() && !m_cropArea->getSelection().isEmpty()) {
+        return;
+    }
+
+    double aspectRatio = 16.0/9.0;
+    int imgWidth = m_currentImage.width();
+    int imgHeight = m_currentImage.height();
+
+    int selWidth, selHeight;
+    if (imgWidth / (double)imgHeight > aspectRatio) {
+        selHeight = imgHeight;
+        selWidth = static_cast<int>(selHeight * aspectRatio);
+    } else {
+        selWidth = imgWidth;
+        selHeight = static_cast<int>(selWidth / aspectRatio);
+    }
+
+    int x = (imgWidth - selWidth) / 2;
+    int y = (imgHeight - selHeight) / 2;
+
+    m_cropArea->setSelection(QRect(x, y, selWidth, selHeight));
+}
+
 
 void CropDialog::setupUi()
 {
@@ -425,7 +455,6 @@ void CropDialog::setupUi()
     m_ratioSubRadio = new QRadioButton("Theo tỉ lệ");
     m_sizeSubRadio = new QRadioButton("Theo kích thước");
     
-    // -- Widget con cho Tỉ lệ
     QWidget* ratioWidgetPage = new QWidget();
     QHBoxLayout *customRatioLayout = new QHBoxLayout(ratioWidgetPage);
     customRatioLayout->setContentsMargins(0, 0, 0, 0);
@@ -441,7 +470,6 @@ void CropDialog::setupUi()
     customRatioLayout->addStretch();
     m_customStackedWidget->addWidget(ratioWidgetPage);
     
-    // -- Widget con cho Kích thước
     QWidget* sizeWidgetPage = new QWidget();
     QHBoxLayout *customSizeLayout = new QHBoxLayout(sizeWidgetPage);
     customSizeLayout->setContentsMargins(0, 0, 0, 0);
@@ -470,7 +498,8 @@ void CropDialog::setupUi()
     
     ratioVLayout->addWidget(m_customContainer);
     m_customContainer->setVisible(false);
-    freeformRadio->setChecked(true);
+    
+    ratio169->setChecked(true);
 
     connect(m_ratioSubRadio, &QRadioButton::toggled, this, &CropDialog::updateCustomValues);
     connect(m_sizeSubRadio, &QRadioButton::toggled, this, &CropDialog::updateCustomValues);
@@ -585,7 +614,6 @@ void CropDialog::updateSizeLabel(const QSize &size)
 void CropDialog::fitToWindow()
 {
     if(m_currentImage.isNull()) return;
-    // THAY ĐỔI: Thêm 0.95 để tạo padding
     double w_ratio = (double)(m_scrollArea->width() * 0.95) / (m_currentImage.width());
     double h_ratio = (double)(m_scrollArea->height() * 0.95) / (m_currentImage.height());
     double scale = qMin(w_ratio, h_ratio);
