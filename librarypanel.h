@@ -1,4 +1,4 @@
-// librarypanel.h - Version 1.1 (Thêm Double Click)
+// librarypanel.h - Version 1.2 (Cải tiến chức năng Xóa)
 #ifndef LIBRARYPANEL_H
 #define LIBRARYPANEL_H
 
@@ -21,13 +21,15 @@ public:
 signals:
     void addImagesClicked();
     void viewAndCropClicked(QListWidgetItem* item);
-    void deleteClicked(QListWidgetItem* item);
+    void deleteCheckedClicked(); // Thay đổi: Signal để xóa các item đã check
     void quickExportRequested(QListWidgetItem* item);
     void selectionChanged();
     void itemsChanged(QListWidgetItem* item);
     void imagesDropped(const QList<QUrl>& urls);
-    // THÊM MỚI: Truyền tín hiệu double-click
     void itemDoubleClicked(QListWidgetItem* item);
+
+private slots:
+    void updateButtonStates(); // Thêm slot để cập nhật trạng thái các nút
 
 private:
     void setupUi();

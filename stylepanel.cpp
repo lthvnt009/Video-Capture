@@ -1,4 +1,10 @@
-// stylepanel.cpp - Version 1.2 (Sửa lỗi biên dịch)
+// stylepanel.cpp - Version 1.8 (Tinh chỉnh UI & Logic theo yêu cầu)
+// Change-log:
+// - Version 1.8:
+//   - Căn chỉnh lại các control trong "Bố cục" để dàn đều, bỏ đường kẻ.
+//   - Sắp xếp lại các control trong "Trang trí" theo yêu cầu.
+// - Version 1.7: Cải tiến UI & Logic toàn diện.
+
 #include "stylepanel.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,6 +19,8 @@
 #include <QToolButton>
 #include <QColorDialog>
 #include <QPushButton> 
+#include <QFrame>
+#include <QCheckBox>
 
 StylePanel::StylePanel(QWidget *parent) 
     : QWidget(parent), m_backgroundColor("#333333")
@@ -37,7 +45,9 @@ void StylePanel::setupUi()
     // -- Bố cục --
     QGroupBox *layoutTypeBox = new QGroupBox("Bố cục");
     layoutTypeBox->installEventFilter(m_titleFilter);
-    QGridLayout *radioLayout = new QGridLayout(layoutTypeBox);
+    
+    QHBoxLayout *radioLayout = new QHBoxLayout(layoutTypeBox);
+
     m_radioHorizontal = new QRadioButton("Ngang");
     m_radioVertical = new QRadioButton("Dọc");
     m_radioGrid = new QRadioButton("Lưới");
@@ -53,13 +63,19 @@ void StylePanel::setupUi()
     m_gridColumnCountCombo = new QComboBox();
     for(int i = 1; i <= 20; ++i) m_gridColumnCountCombo->addItem(QString::number(i));
     
-    radioLayout->addWidget(m_radioHorizontal, 0, 0);
-    radioLayout->addWidget(m_radioVertical, 0, 1);
-    radioLayout->addWidget(m_radioGrid, 0, 2);
-    radioLayout->setColumnStretch(3, 1); 
-    radioLayout->addWidget(m_gridAutoRadio, 0, 4);
-    radioLayout->addWidget(m_gridColumnRadio, 0, 5);
-    radioLayout->addWidget(m_gridColumnCountCombo, 0, 6);
+    // === GIẢI PHÁP 1: Dàn đều các control ===
+    // Thêm các stretch vào giữa các widget để đẩy chúng ra và tạo khoảng cách đều nhau.
+    radioLayout->addWidget(m_radioHorizontal);
+    radioLayout->addStretch();
+    radioLayout->addWidget(m_radioVertical);
+    radioLayout->addStretch();
+    radioLayout->addWidget(m_radioGrid);
+    radioLayout->addStretch();
+    radioLayout->addWidget(m_gridAutoRadio);
+    radioLayout->addStretch();
+    radioLayout->addWidget(m_gridColumnRadio);
+    radioLayout->addWidget(m_gridColumnCountCombo);
+    
     mainStyleLayout->addWidget(layoutTypeBox);
 
     // -- Tùy chỉnh chi tiết --
@@ -67,6 +83,8 @@ void StylePanel::setupUi()
     
     QGroupBox *sizingBox = new QGroupBox("Kích thước ảnh");
     sizingBox->installEventFilter(m_titleFilter);
+    sizingBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
     QVBoxLayout *sizingLayout = new QVBoxLayout(sizingBox);
     m_sizingGroup = new QButtonGroup(this);
     m_sizeOriginalRadio = new QRadioButton("Gốc");
@@ -107,6 +125,8 @@ void StylePanel::setupUi()
 
     QGroupBox *decorationBox = new QGroupBox("Trang trí");
     decorationBox->installEventFilter(m_titleFilter);
+    decorationBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
     QGridLayout *decorationLayout = new QGridLayout(decorationBox);
     
     m_borderSpinBox = new QSpinBox();
@@ -133,16 +153,29 @@ void StylePanel::setupUi()
     decorationLayout->addWidget(createVerticalSpinBox(m_spacingSpinBox), 2, 1);
     decorationLayout->addWidget(m_spacingSlider, 2, 2);
 
+    // === GIẢI PHÁP 3: Sắp xếp lại control Nền ===
+    decorationLayout->addWidget(new QLabel("Nền:"), 3, 0);
+
     QHBoxLayout *bgColorLayout = new QHBoxLayout();
     m_colorSwatch = new ClickableFrame();
-    m_colorSwatch->setFrameShape(QFrame::Box); m_colorSwatch->setFrameShadow(QFrame::Sunken); m_colorSwatch->setAutoFillBackground(true); m_colorSwatch->setFixedSize(22, 22);
-    QPalette pal = m_colorSwatch->palette(); pal.setColor(QPalette::Window, m_backgroundColor); m_colorSwatch->setPalette(pal);
+    m_colorSwatch->setFrameShape(QFrame::Box);
+    m_colorSwatch->setFrameShadow(QFrame::Sunken);
+    m_colorSwatch->setAutoFillBackground(true);
+    m_colorSwatch->setFixedSize(22, 22);
+    QPalette pal = m_colorSwatch->palette();
+    pal.setColor(QPalette::Window, m_backgroundColor);
+    m_colorSwatch->setPalette(pal);
+    
     QPushButton* changeColorButton = new QPushButton("Thay đổi");
     changeColorButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    
+    m_noBgCheckBox = new QCheckBox("Không nền");
+    
     bgColorLayout->addWidget(m_colorSwatch);
     bgColorLayout->addWidget(changeColorButton);
+    bgColorLayout->addWidget(m_noBgCheckBox);
     bgColorLayout->addStretch();
-    decorationLayout->addWidget(new QLabel("Nền:"), 3, 0);
+    
     decorationLayout->addLayout(bgColorLayout, 3, 1, 1, 2);
     detailLayout->addWidget(decorationBox);
 
@@ -182,6 +215,11 @@ void StylePanel::setupUi()
         }
     });
     connect(m_colorSwatch, &ClickableFrame::clicked, changeColorButton, &QPushButton::click);
+    
+    connect(m_noBgCheckBox, &QCheckBox::toggled, this, &StylePanel::onStyleOptionChanged);
+    connect(m_noBgCheckBox, &QCheckBox::toggled, m_colorSwatch, &QWidget::setDisabled);
+    connect(m_noBgCheckBox, &QCheckBox::toggled, changeColorButton, &QWidget::setDisabled);
+
 
     onStyleOptionChanged(); // Gửi tín hiệu ban đầu
 }
@@ -198,17 +236,14 @@ void StylePanel::onStyleOptionChanged()
     m_customSizeContainer->setVisible(isCustom);
 
     if (m_radioHorizontal->isChecked()) {
-        m_sizeCustomRadio->setText("Cao");
-        m_customSizeLabelW->hide(); m_customWidthSpinBox->hide();
-        m_customSizeLabelH->show(); m_customHeightSpinBox->show();
+        m_customSizeLabelW->hide(); m_customWidthSpinBox->parentWidget()->hide();
+        m_customSizeLabelH->show(); m_customHeightSpinBox->parentWidget()->show();
     } else if (m_radioVertical->isChecked()) {
-        m_sizeCustomRadio->setText("Ngang");
-        m_customSizeLabelW->show(); m_customWidthSpinBox->show();
-        m_customSizeLabelH->hide(); m_customHeightSpinBox->hide();
+        m_customSizeLabelW->show(); m_customWidthSpinBox->parentWidget()->show();
+        m_customSizeLabelH->hide(); m_customHeightSpinBox->parentWidget()->hide();
     } else { // Grid
-        m_sizeCustomRadio->setText("Cỡ");
-        m_customSizeLabelW->show(); m_customWidthSpinBox->show();
-        m_customSizeLabelH->show(); m_customHeightSpinBox->show();
+        m_customSizeLabelW->show(); m_customWidthSpinBox->parentWidget()->show();
+        m_customSizeLabelH->show(); m_customHeightSpinBox->parentWidget()->show();
     }
 
     // Đóng gói và gửi dữ liệu
@@ -227,11 +262,17 @@ void StylePanel::onStyleOptionChanged()
     opts.border = m_borderSpinBox->value();
     opts.cornerRadius = m_cornerRadiusSpinBox->value();
     opts.spacing = m_spacingSpinBox->value();
-    opts.backgroundColor = m_backgroundColor;
+    
+    if (m_noBgCheckBox->isChecked()) {
+        opts.backgroundColor = Qt::transparent;
+    } else {
+        opts.backgroundColor = m_backgroundColor;
+    }
 
     emit styleChanged(opts);
 }
 
+// Helper function để tạo spinbox với nút bấm dọc
 QWidget* StylePanel::createVerticalSpinBox(QSpinBox* spinbox) {
     QWidget *container = new QWidget();
     QHBoxLayout *layout = new QHBoxLayout(container);

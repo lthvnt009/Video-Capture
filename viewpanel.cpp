@@ -1,4 +1,10 @@
-// viewpanel.cpp - Version 2.3 (Grid Columns & Size Signal)
+// viewpanel.cpp - Version 2.5 (Hoàn thiện logic Crop)
+// Change-log:
+// - Version 2.5:
+//   - Triển khai logic crop ảnh thủ công khi ở chế độ Lưới & Tùy chỉnh
+//     để đảm bảo ảnh không bị méo.
+// - Version 2.4: Sửa logic co giãn ảnh.
+
 #include "viewpanel.h"
 #include <QPainter>
 #include <QPainterPath>
@@ -77,17 +83,27 @@ void ViewPanel::processImages()
 
         case Custom: {
             for (const QImage &img : m_originalImages) {
-                QImage scaledImage;
+                QImage finalImage;
                 if (m_layoutType == Horizontal && m_customHeight > 0) {
-                    scaledImage = img.scaledToHeight(m_customHeight, Qt::SmoothTransformation);
+                    finalImage = img.scaledToHeight(m_customHeight, Qt::SmoothTransformation);
                 } else if (m_layoutType == Vertical && m_customWidth > 0) {
-                    scaledImage = img.scaledToWidth(m_customWidth, Qt::SmoothTransformation);
+                    finalImage = img.scaledToWidth(m_customWidth, Qt::SmoothTransformation);
                 } else if (m_layoutType == Grid && m_customWidth > 0 && m_customHeight > 0) {
-                    scaledImage = img.scaled(m_customWidth, m_customHeight, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                    // === GIẢI PHÁP 2: Logic CROP ảnh thủ công ===
+                    // 1. Phóng to ảnh để lấp đầy khung tùy chỉnh
+                    QImage tempScaled = img.scaled(m_customWidth, m_customHeight, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                    
+                    // 2. Tính toán vùng cần cắt (chính giữa)
+                    int x = (tempScaled.width() - m_customWidth) / 2;
+                    int y = (tempScaled.height() - m_customHeight) / 2;
+                    QRect cropRect(x, y, m_customWidth, m_customHeight);
+
+                    // 3. Cắt và lấy ảnh cuối cùng
+                    finalImage = tempScaled.copy(cropRect);
                 } else {
-                    scaledImage = img;
+                    finalImage = img;
                 }
-                m_processedImages.append(scaledImage);
+                m_processedImages.append(finalImage);
             }
             break;
         }
@@ -119,7 +135,6 @@ void ViewPanel::fitToWindow()
         return;
     }
 
-    // THAY ĐỔI: Thêm 0.95 để tạo padding
     double scaleX = (this->width() * 0.95) / totalSize.width();
     double scaleY = (this->height() * 0.95) / totalSize.height();
     double fitScale = qMin(scaleX, scaleY);
@@ -195,7 +210,6 @@ QImage ViewPanel::getCompositedImage() const
             currentY += image.height() + m_spacing;
         }
     } else { // Grid
-        // THAY ĐỔI: Sử dụng số cột tùy chỉnh hoặc tự động
         int cols = (m_gridColumnCount > 0) ? m_gridColumnCount : findBestColumnCount();
         if (cols == 0) return QImage();
         int current_col = 0;

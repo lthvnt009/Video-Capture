@@ -1,4 +1,9 @@
-// sidepanel.cpp - Version 2.4 (Sửa lỗi biên dịch)
+// sidepanel.cpp - Version 2.8 (Thêm phím Delete)
+// Change-log:
+// - Version 2.8:
+//   - Thêm logic xử lý xóa ảnh bằng phím Delete.
+// - Version 2.7: Cải tiến logic toàn diện.
+
 #include "sidepanel.h"
 #include "librarypanel.h"
 #include "viewpanel.h"
@@ -30,17 +35,16 @@ void SidePanel::setupUi()
     m_stylePanel = new StylePanel(this);
     m_exportPanel = new ExportPanel(this);
 
-    // --- KHÔI PHỤC PANEL "XEM" ---
     m_viewPanel = new ViewPanel();
-    TitleEventFilter* viewTitleFilter = new TitleEventFilter(this); // Filter riêng cho panel này
+    TitleEventFilter* viewTitleFilter = new TitleEventFilter(this);
     QGroupBox *viewBox = new QGroupBox("Xem", this);
     viewBox->setToolTip("Hiển thị ảnh ghép từ các ảnh đã chọn trong thư viện.\n"
                         "- Lăn chuột để phóng to/thu nhỏ.\n"
-                        "- Nhấn 'Xem & Cắt' để mở cửa sổ cắt ảnh ghép này.");
+                        "- Nhấn 'Xem' để mở cửa sổ cắt ảnh ghép này.");
     viewBox->installEventFilter(viewTitleFilter);
     QVBoxLayout *viewLayout = new QVBoxLayout(viewBox);
     
-    QPushButton *cropButton = new QPushButton("Xem & Cắt");
+    QPushButton *cropButton = new QPushButton("Xem");
     cropButton->setToolTip("Mở cửa sổ xem và cắt ảnh ghép");
     cropButton->setStyleSheet("background-color: #2980b9; color: white; border: none; padding: 5px; border-radius: 3px;");
     
@@ -74,7 +78,6 @@ void SidePanel::setupUi()
     viewLayout->addLayout(viewControlsLayout);
     viewLayout->addWidget(m_viewPanel);
 
-    // Kết nối các nút điều khiển của Panel Xem
     connect(fitButton, &QPushButton::clicked, m_viewPanel, &ViewPanel::fitToWindow);
     connect(oneToOneButton, &QPushButton::clicked, m_viewPanel, &ViewPanel::setOneToOne);
     connect(cropButton, &QPushButton::clicked, this, &SidePanel::onViewPanelCrop);
@@ -84,16 +87,16 @@ void SidePanel::setupUi()
     connect(m_viewPanel, &ViewPanel::compositedImageSizeChanged, this, [viewSizeLabel](const QSize &size){
         viewSizeLabel->setText(QString("%1x%2").arg(size.width()).arg(size.height()));
     });
-    // --- KẾT THÚC KHÔI PHỤC ---
 
     mainLayout->addWidget(m_libraryPanel, 2); 
-    mainLayout->addWidget(viewBox, 4); // Thêm viewBox thay vì m_viewPanel trực tiếp   
+    mainLayout->addWidget(viewBox, 4);   
     mainLayout->addWidget(m_stylePanel, 0);
     mainLayout->addWidget(m_exportPanel, 0);
 
     // --- Connections ---
     connect(m_libraryPanel, &LibraryPanel::viewAndCropClicked, this, &SidePanel::onViewAndCropItem);
-    connect(m_libraryPanel, &LibraryPanel::deleteClicked, this, &SidePanel::onDeleteItem);
+    connect(m_libraryPanel, &LibraryPanel::deleteCheckedClicked, this, &SidePanel::onDeleteChecked);
+    connect(m_libraryPanel->getLibraryWidget(), &LibraryWidget::deleteRequested, this, &SidePanel::onDeleteSelection); // Kết nối signal mới
     connect(m_libraryPanel, &LibraryPanel::quickExportRequested, this, &SidePanel::onQuickExportItem);
     connect(m_libraryPanel, &LibraryPanel::itemsChanged, this, &SidePanel::onLibraryItemsChanged);
     connect(m_libraryPanel, &LibraryPanel::itemDoubleClicked, this, &SidePanel::onItemDoubleClicked);
@@ -106,6 +109,29 @@ void SidePanel::setupUi()
     connect(m_exportPanel, &ExportPanel::exportClicked, this, &SidePanel::onExportClicked);
 }
 
+// === GIẢI PHÁP: Thêm phím Delete ===
+void SidePanel::onDeleteSelection()
+{
+    LibraryWidget* lw = m_libraryPanel->getLibraryWidget();
+    QList<QListWidgetItem*> itemsToDelete = lw->selectedItems();
+
+    if (itemsToDelete.isEmpty()) return;
+
+    int ret = QMessageBox::question(this, "Xác nhận xoá", 
+        QString("Bạn có chắc muốn xoá %1 ảnh đã chọn?").arg(itemsToDelete.count()), 
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (ret == QMessageBox::Yes) {
+        for (QListWidgetItem* item : itemsToDelete) {
+            QString filePath = item->data(Qt::UserRole).toString();
+            emit fileDeleted(filePath); 
+            delete lw->takeItem(lw->row(item));
+        }
+        onLibraryItemsChanged(nullptr);
+    }
+}
+
+// ... (Các hàm còn lại không thay đổi) ...
 void SidePanel::onItemDoubleClicked(QListWidgetItem* item)
 {
     QString filePath = item->data(Qt::UserRole).toString();
@@ -159,13 +185,29 @@ void SidePanel::onViewAndCropItem(QListWidgetItem* item)
     }
 }
 
-void SidePanel::onDeleteItem(QListWidgetItem* item)
+void SidePanel::onDeleteChecked()
 {
-    int ret = QMessageBox::question(this, "Xác nhận xoá", "Bạn có chắc muốn xoá ảnh đã chọn?", QMessageBox::Yes | QMessageBox::No);
+    LibraryWidget* lw = m_libraryPanel->getLibraryWidget();
+    QList<QListWidgetItem*> itemsToDelete;
+    for (int i = 0; i < lw->count(); ++i) {
+        if (lw->item(i)->checkState() == Qt::Checked) {
+            itemsToDelete.append(lw->item(i));
+        }
+    }
+
+    if (itemsToDelete.isEmpty()) return;
+
+    int ret = QMessageBox::question(this, "Xác nhận xoá", 
+        QString("Bạn có chắc muốn xoá %1 ảnh đã đánh dấu?").arg(itemsToDelete.count()), 
+        QMessageBox::Yes | QMessageBox::No);
+
     if (ret == QMessageBox::Yes) {
-        QString filePath = item->data(Qt::UserRole).toString();
-        emit fileDeleted(filePath); 
-        delete m_libraryPanel->getLibraryWidget()->takeItem(m_libraryPanel->getLibraryWidget()->row(item));
+        for (QListWidgetItem* item : itemsToDelete) {
+            QString filePath = item->data(Qt::UserRole).toString();
+            emit fileDeleted(filePath); 
+            delete lw->takeItem(lw->row(item));
+        }
+        onLibraryItemsChanged(nullptr);
     }
 }
 
@@ -206,6 +248,8 @@ void SidePanel::applyStylesToViewPanel(const StyleOptions& options)
     m_viewPanel->setCornerRadius(options.cornerRadius);
     m_viewPanel->setSpacing(options.spacing);
     m_viewPanel->setBackgroundColor(options.backgroundColor);
+    
+    m_viewPanel->fitToWindow();
 }
 
 void SidePanel::onExportClicked()

@@ -1,4 +1,10 @@
-// librarypanel.cpp - Version 1.2 (Đổi tên nút)
+// librarypanel.cpp - Version 1.3 (Cải tiến chức năng Xóa)
+// Change-log:
+// - Version 1.3:
+//   - Nút "Xoá" giờ sẽ xóa tất cả các ảnh đã được đánh dấu (checked).
+//   - Trạng thái của nút "Xoá" được cập nhật dựa trên việc có ảnh nào được đánh dấu hay không.
+// - Version 1.2: Đổi tên nút.
+
 #include "librarypanel.h"
 #include "librarywidget.h"
 #include "libraryitemdelegate.h"
@@ -46,13 +52,14 @@ void LibraryPanel::setupUi()
     m_addImagesButton->setToolTip("Thêm ảnh từ máy tính vào thư viện");
     m_addImagesButton->setStyleSheet("background-color: #16a085; color: white; border: none; padding: 5px; border-radius: 3px;");
 
-    // SỬA LỖI: Đổi tên nút
     m_viewAndCropButton = new QPushButton("Xem");
     m_viewAndCropButton->setToolTip("Mở cửa sổ Cắt ảnh cho ảnh đã chọn");
     m_viewAndCropButton->setStyleSheet("background-color: #2980b9; color: white; border: none; padding: 5px; border-radius: 3px;");
+    
     m_deleteButton = new QPushButton("Xoá");
-    m_deleteButton->setToolTip("Xoá ảnh đã chọn khỏi thư viện");
+    m_deleteButton->setToolTip("Xoá các ảnh đã đánh dấu"); // Cập nhật tooltip
     m_deleteButton->setStyleSheet("background-color: #c0392b; color: white; border: none; padding: 5px; border-radius: 3px;");
+    
     m_viewAndCropButton->setEnabled(false);
     m_deleteButton->setEnabled(false);
 
@@ -73,20 +80,35 @@ void LibraryPanel::setupUi()
             emit viewAndCropClicked(m_libraryWidget->selectedItems().first());
         }
     });
-    connect(m_deleteButton, &QPushButton::clicked, this, [this](){
-        if (!m_libraryWidget->selectedItems().isEmpty()) {
-            emit deleteClicked(m_libraryWidget->selectedItems().first());
-        }
-    });
+    // Thay đổi: Kết nối nút Xoá với signal mới
+    connect(m_deleteButton, &QPushButton::clicked, this, &LibraryPanel::deleteCheckedClicked);
 
     connect(m_libraryWidget, &LibraryWidget::itemQuickExportRequested, this, &LibraryPanel::quickExportRequested);
     connect(m_libraryWidget, &LibraryWidget::imagesDropped, this, &LibraryPanel::imagesDropped);
     connect(m_libraryWidget, &QListWidget::itemChanged, this, &LibraryPanel::itemsChanged);
-    connect(m_libraryWidget, &QListWidget::itemSelectionChanged, this, [this](){
-        bool hasSelection = !m_libraryWidget->selectedItems().isEmpty();
-        m_viewAndCropButton->setEnabled(hasSelection);
-        m_deleteButton->setEnabled(hasSelection);
-        emit selectionChanged();
-    });
+    
+    // Thay đổi: Cả hai signal đều gọi một slot duy nhất để cập nhật trạng thái nút
+    connect(m_libraryWidget, &QListWidget::itemSelectionChanged, this, &LibraryPanel::updateButtonStates);
+    connect(m_libraryWidget, &QListWidget::itemChanged, this, &LibraryPanel::updateButtonStates);
+
     connect(m_libraryWidget, &LibraryWidget::itemDoubleClicked, this, &LibraryPanel::itemDoubleClicked);
+}
+
+void LibraryPanel::updateButtonStates()
+{
+    // Cập nhật trạng thái nút "Xem" dựa trên item được chọn
+    bool hasSelection = !m_libraryWidget->selectedItems().isEmpty();
+    m_viewAndCropButton->setEnabled(hasSelection);
+    
+    // Cập nhật trạng thái nút "Xoá" dựa trên các item được đánh dấu
+    bool hasCheckedItems = false;
+    for (int i = 0; i < m_libraryWidget->count(); ++i) {
+        if (m_libraryWidget->item(i)->checkState() == Qt::Checked) {
+            hasCheckedItems = true;
+            break;
+        }
+    }
+    m_deleteButton->setEnabled(hasCheckedItems);
+    
+    if(hasSelection) emit selectionChanged();
 }

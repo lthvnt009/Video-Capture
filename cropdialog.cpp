@@ -1,4 +1,10 @@
-// cropdialog.cpp - Version 5.0 (Sửa lỗi 16:9)
+// cropdialog.cpp - Version 5.2 (Sửa lỗi vùng chọn mặc định và áp dụng tỉ lệ ban đầu)
+// Change-log:
+// - Version 5.2:
+//   - Xóa bỏ việc tự động tạo vùng chọn khi mở dialog.
+//   - Đảm bảo tỉ lệ được chọn ban đầu (16:9) được áp dụng ngay lập tức.
+// - Version 5.1: Tái cấu trúc hoàn toàn hàm CropArea::resizeSelection để đảm bảo
+//   việc thay đổi kích thước vùng chọn luôn tuân thủ tỉ lệ đã chọn một cách chính xác.
 #include "cropdialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -62,7 +68,20 @@ void CropArea::setAspectRatio(double ratio)
 {
     m_aspectRatio = ratio;
     if (m_aspectRatio > 0 && m_selectionRect.isValid()) {
-        m_selectionRect.setHeight(m_selectionRect.width() / m_aspectRatio);
+        // Khi đổi tỉ lệ, điều chỉnh vùng chọn hiện tại
+        QRectF rect = m_selectionRect.normalized();
+        double newHeight = rect.width() / m_aspectRatio;
+        rect.setHeight(newHeight);
+        // Cần đảm bảo nó không vượt ra ngoài ảnh
+        if (rect.bottom() > m_image.rect().bottom()) {
+            rect.moveBottom(m_image.rect().bottom());
+            rect.setWidth(rect.height() * m_aspectRatio);
+        }
+        if (rect.right() > m_image.rect().right()) {
+            rect.moveRight(m_image.rect().right());
+            rect.setHeight(rect.width() / m_aspectRatio);
+        }
+        m_selectionRect = rect;
     }
     emitSelectionSize();
     update();
@@ -104,7 +123,7 @@ void CropArea::setSelection(const QRect& rect)
 void CropArea::emitSelectionSize()
 {
     if (m_selectionRect.isValid() && !m_selectionRect.isEmpty()) {
-        emit selectionSizeChanged(m_selectionRect.size().toSize());
+        emit selectionSizeChanged(m_selectionRect.normalized().size().toSize());
     } else {
         emit selectionSizeChanged(m_image.size());
     }
@@ -213,38 +232,65 @@ void CropArea::updateCursor(const QPointF &pos)
 
 void CropArea::resizeSelection(const QPointF &pos)
 {
-    QRectF originalRect = m_selectionRect;
-    QPointF delta = pos - m_dragStartPos;
+    if (m_aspectRatio > 0 && m_currentHandle != Move) {
+        QPointF anchor; 
+        if (m_currentHandle == TopLeft)         anchor = m_selectionRect.bottomRight();
+        else if (m_currentHandle == TopRight)   anchor = m_selectionRect.bottomLeft();
+        else if (m_currentHandle == BottomLeft) anchor = m_selectionRect.topRight();
+        else if (m_currentHandle == BottomRight)anchor = m_selectionRect.topLeft();
 
-    switch (m_currentHandle) {
-        case TopLeft: m_selectionRect.setTopLeft(originalRect.topLeft() + delta); break;
-        case Top: m_selectionRect.setTop(originalRect.top() + delta.y()); break;
-        case TopRight: m_selectionRect.setTopRight(originalRect.topRight() + delta); break;
-        case Right: m_selectionRect.setRight(originalRect.right() + delta.x()); break;
-        case BottomRight: m_selectionRect.setBottomRight(originalRect.bottomRight() + delta); break;
-        case Bottom: m_selectionRect.setBottom(originalRect.bottom() + delta.y()); break;
-        case BottomLeft: m_selectionRect.setBottomLeft(originalRect.bottomLeft() + delta); break;
-        case Left: m_selectionRect.setLeft(originalRect.left() + delta.x()); break;
-        case Move: m_selectionRect.translate(delta); break;
-        default: break;
-    }
+        if (!anchor.isNull()) { 
+            QPointF adjustedPos = pos;
+            double dx = pos.x() - anchor.x();
+            double dy = pos.y() - anchor.y();
 
-    if (m_aspectRatio > 0) {
-        double w = m_selectionRect.width();
-        double h = m_selectionRect.height();
-        if (m_currentHandle == Top || m_currentHandle == Bottom || m_currentHandle == TopLeft || m_currentHandle == TopRight || m_currentHandle == BottomLeft || m_currentHandle == BottomRight) {
-             h = w / m_aspectRatio;
-             m_selectionRect.setHeight(h);
-        } else {
-             w = h * m_aspectRatio;
-             m_selectionRect.setWidth(w);
+            if (qAbs(dx) / m_aspectRatio > qAbs(dy)) {
+                adjustedPos.setY(anchor.y() + (dx / m_aspectRatio) * (dy >= 0 ? 1.0 : -1.0));
+            } else {
+                adjustedPos.setX(anchor.x() + (dy * m_aspectRatio) * (dx >= 0 ? 1.0 : -1.0));
+            }
+            m_selectionRect = QRectF(anchor, adjustedPos);
+
+        } else { 
+            QRectF currentRect = m_selectionRect;
+            if (m_currentHandle == Top)         currentRect.setTop(pos.y());
+            else if (m_currentHandle == Bottom) currentRect.setBottom(pos.y());
+            else if (m_currentHandle == Left)   currentRect.setLeft(pos.x());
+            else if (m_currentHandle == Right)  currentRect.setRight(pos.x());
+
+            if (m_currentHandle == Top || m_currentHandle == Bottom) {
+                double newWidth = qAbs(currentRect.height()) * m_aspectRatio;
+                currentRect.setWidth(newWidth);
+                currentRect.moveLeft(m_selectionRect.center().x() - newWidth / 2.0);
+            } else { 
+                double newHeight = qAbs(currentRect.width()) / m_aspectRatio;
+                currentRect.setHeight(newHeight);
+                currentRect.moveTop(m_selectionRect.center().y() - newHeight / 2.0);
+            }
+            m_selectionRect = currentRect;
         }
+    } else {
+        QPointF delta = pos - m_dragStartPos;
+        QRectF originalRect = m_selectionRect;
+        switch (m_currentHandle) {
+            case TopLeft:     m_selectionRect.setTopLeft(originalRect.topLeft() + delta); break;
+            case Top:         m_selectionRect.setTop(originalRect.top() + delta.y()); break;
+            case TopRight:    m_selectionRect.setTopRight(originalRect.topRight() + delta); break;
+            case Right:       m_selectionRect.setRight(originalRect.right() + delta.x()); break;
+            case BottomRight: m_selectionRect.setBottomRight(originalRect.bottomRight() + delta); break;
+            case Bottom:      m_selectionRect.setBottom(originalRect.bottom() + delta.y()); break;
+            case BottomLeft:  m_selectionRect.setBottomLeft(originalRect.bottomLeft() + delta); break;
+            case Left:        m_selectionRect.setLeft(originalRect.left() + delta.x()); break;
+            case Move:        m_selectionRect.translate(delta); break;
+            default: break;
+        }
+        m_dragStartPos = pos;
     }
 
-    m_dragStartPos = pos;
     emitSelectionSize();
     update();
 }
+
 
 CropArea::Handle CropArea::getHandleAt(const QPointF &pos) const
 {
@@ -368,11 +414,18 @@ void CropDialog::showEvent(QShowEvent *event)
     QDialog::showEvent(event);
     m_cropArea->setFocus();
     fitToWindow();
-    QTimer::singleShot(0, this, &CropDialog::createDefaultSelection);
+    
+    // SỬA LỖI: Đồng bộ hóa trạng thái tỉ lệ khi dialog hiển thị
+    // thay vì tự động tạo vùng chọn.
+    onAspectRatioChanged(m_ratioGroup->checkedId(), true);
+    
+    // SỬA LỖI: Đã xóa dòng QTimer::singleShot để không tạo vùng chọn mặc định.
+    // QTimer::singleShot(0, this, &CropDialog::createDefaultSelection);
 }
 
 void CropDialog::createDefaultSelection()
 {
+    // Chức năng này không còn được sử dụng nhưng vẫn giữ lại mã nguồn để tham khảo.
     if (m_currentImage.isNull()) return;
 
     if (m_cropArea->getSelection().isValid() && !m_cropArea->getSelection().isEmpty()) {

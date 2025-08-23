@@ -1,7 +1,12 @@
-// playerpanel.cpp - Version 1.1 (Thêm Time Label Update)
+// playerpanel.cpp - Version 1.2 (Hoàn thiện Mute)
+// Change-log:
+// - Version 1.2:
+//   - Thêm slot setVolume() và hàm isMuted().
+// - Version 1.1: Thêm Time Label Update.
+
 #include "playerpanel.h"
 #include "videowidget.h"
-#include "helpers.h" // Đổi sang dùng helpers.h
+#include "helpers.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -24,6 +29,17 @@ PlayerPanel::PlayerPanel(QWidget *parent) : QWidget(parent)
 VideoWidget* PlayerPanel::getVideoWidget() const
 {
     return m_videoWidget;
+}
+
+// === GIẢI PHÁP: Hoàn thiện Mute ===
+bool PlayerPanel::isMuted() const
+{
+    return m_muteButton->isChecked();
+}
+
+void PlayerPanel::setVolume(int volume)
+{
+    m_volumeSlider->setValue(volume);
 }
 
 void PlayerPanel::setupUi()
@@ -127,7 +143,6 @@ void PlayerPanel::setupUi()
     connect(m_volumeSlider, &QSlider::valueChanged, this, &PlayerPanel::volumeChanged);
     connect(m_toggleRightPanelButton, &QPushButton::clicked, this, &PlayerPanel::toggleRightPanelClicked);
 
-    // Kết nối nội bộ để cập nhật icon của nút Mute
     connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int volume){
         bool isMutedNow = (volume == 0);
         m_muteButton->setChecked(isMutedNow);
@@ -135,6 +150,7 @@ void PlayerPanel::setupUi()
     });
 }
 
+// ... (Các hàm còn lại không thay đổi) ...
 void PlayerPanel::updatePlayerState(bool isVideoLoaded)
 {
     m_playPauseButton->setEnabled(isVideoLoaded);
@@ -152,12 +168,11 @@ void PlayerPanel::updateUIWithFrame(const FrameData& frameData, qint64 duration,
         m_videoWidget->setImage(frameData.image);
         if (timeBase.den == 0) return;
 
-        m_duration = duration; // Cập nhật duration
+        m_duration = duration;
         int64_t currentTimeUs = frameData.pts * 1000000 * timeBase.num / timeBase.den;
         
         updateTimeLabelOnly(currentTimeUs, duration, frameRate);
 
-        // Cập nhật Timeline Slider
         m_timelineSlider->blockSignals(true);
         if (duration > 0) {
             m_timelineSlider->setValue((double)currentTimeUs / duration * 1000);
@@ -166,7 +181,6 @@ void PlayerPanel::updateUIWithFrame(const FrameData& frameData, qint64 duration,
     }
 }
 
-// THÊM MỚI: Hàm chỉ cập nhật label
 void PlayerPanel::updateTimeLabelOnly(qint64 currentTimeUs, qint64 totalTimeUs, double frameRate)
 {
     QString timeStr = formatTime(currentTimeUs);
@@ -179,7 +193,6 @@ void PlayerPanel::updateTimeLabelOnly(qint64 currentTimeUs, qint64 totalTimeUs, 
         m_timeLabel->setText(QString("%1 / %2").arg(timeStr).arg(durationStr));
     }
 }
-
 
 void PlayerPanel::setPlayPauseButtonIcon(bool isPlaying)
 {

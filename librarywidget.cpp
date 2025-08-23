@@ -1,4 +1,9 @@
-// librarywidget.cpp - Version 1.7 (Thêm Double Click)
+// librarywidget.cpp - Version 1.8 (Thêm phím Delete)
+// Change-log:
+// - Version 1.8:
+//   - Bắt sự kiện nhấn phím Delete và phát ra signal `deleteRequested`.
+// - Version 1.7: Thêm Double Click.
+
 #include "librarywidget.h"
 #include <QApplication>
 #include <QDropEvent>
@@ -15,7 +20,20 @@ LibraryWidget::LibraryWidget(QWidget *parent) : QListWidget(parent)
     setFlow(QListView::LeftToRight);
     setWrapping(true);
     setResizeMode(QListView::Adjust);
-    setSelectionMode(QAbstractItemView::SingleSelection);
+    setSelectionMode(QAbstractItemView::ExtendedSelection); // Cho phép chọn nhiều item
+}
+
+// === GIẢI PHÁP: Thêm phím Delete ===
+void LibraryWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Delete) {
+        if (!selectedItems().isEmpty()) {
+            emit deleteRequested();
+            event->accept();
+            return;
+        }
+    }
+    QListWidget::keyPressEvent(event);
 }
 
 void LibraryWidget::mouseDoubleClickEvent(QMouseEvent *event)
@@ -26,7 +44,6 @@ void LibraryWidget::mouseDoubleClickEvent(QMouseEvent *event)
         return;
     }
 
-    // THÊM MỚI: Xử lý double-click chuột trái
     if (event->button() == Qt::LeftButton) {
         emit itemDoubleClicked(item);
         event->accept();
@@ -42,6 +59,7 @@ void LibraryWidget::mouseDoubleClickEvent(QMouseEvent *event)
     QListWidget::mouseDoubleClickEvent(event);
 }
 
+// ... (Các hàm drag-drop không đổi) ...
 void LibraryWidget::dragEnterEvent(QDragEnterEvent *event)
 {
     if (event->mimeData()->hasUrls()) {

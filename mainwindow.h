@@ -1,4 +1,4 @@
-// mainwindow.h - Version 6.2 (Sửa lỗi connect)
+// mainwindow.h - Version 7.0 (Hoàn thiện Mute & DragDrop)
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
@@ -54,11 +54,10 @@ private slots:
     void onPlayPause();
     void onCapture();
     void onCaptureAndExport();
-    void onMuteClicked();
+    void onMuteClicked(); // Đã được lập trình
     void onVolumeChanged(int volume);
     void onToggleRightPanel();
     void onTimelineMoved(int position);
-    // THÊM MỚI: Thêm lại slot đã thiếu
     void onTimelineReleased();
 
     void onExportImage(const QImage& image);
@@ -90,7 +89,7 @@ private:
     // Audio
     QAudioSink *m_audioSink = nullptr;
     QIODevice *m_audioDevice = nullptr;
-    float m_lastVolume = 1.0f;
+    float m_lastVolume = 1.0f; // Lưu lại âm lượng trước khi Mute
 
     // Data & State
     bool m_isPlaying = false;

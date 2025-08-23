@@ -1,4 +1,11 @@
-// mainwindow.cpp - Version 8.4 (Sửa lỗi tua video)
+// mainwindow.cpp - Version 9.0 (Hoàn thiện Mute & DragDrop)
+// Change-log:
+// - Version 9.0:
+//   - Hoàn thiện chức năng cho nút Mute.
+//   - Cải tiến Drag-and-Drop: Chấp nhận file ở bất kỳ đâu trên cửa sổ
+//     và tự động phân loại video/ảnh.
+// - Version 8.4: Sửa lỗi tua video.
+
 #include "mainwindow.h"
 #include "playerpanel.h"
 #include "sidepanel.h" 
@@ -64,7 +71,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
-    this->setWindowTitle("Frame Capture v6.0 (Stable)");
+    this->setWindowTitle("Frame Capture v7.0 (Stable)");
     this->setWindowIcon(QIcon(":/icons/icon.png"));
     this->resize(1600, 900); 
 
@@ -108,6 +115,7 @@ void MainWindow::setupUi()
     });
 }
 
+// ... (Các hàm setupVideoWorker, closeEvent, save/loadSettings, setup/cleanupTempDirectory không đổi) ...
 void MainWindow::setupVideoWorker()
 {
     m_videoThread = std::make_unique<QThread>();
@@ -199,10 +207,13 @@ void MainWindow::onFileOpened(bool success, VideoProcessor::AudioParams params, 
                  QMessageBox::warning(this, "Lỗi Âm thanh", "Không tìm thấy thiết bị âm thanh mặc định.");
             } else {
                 m_audioSink = new QAudioSink(devices, format);
+                // Tăng kích thước buffer để giảm giật
                 int bufferSize = params.sample_rate * params.channels * (16 / 8) * 2.0; 
                 m_audioSink->setBufferSize(bufferSize);
                 m_audioDevice = m_audioSink->start();
-                onVolumeChanged(100); 
+                
+                // Khôi phục lại âm lượng cuối cùng
+                m_playerPanel->setVolume(m_lastVolume * 100);
             }
         }
     } else {
@@ -218,38 +229,48 @@ void MainWindow::onFrameReady(const FrameData &frameData)
     }
 }
 
+// === GIẢI PHÁP: Cải tiến Kéo-Thả ===
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
-    if (!event->mimeData()->hasUrls()) {
-        event->ignore();
-        return;
-    }
-    const QUrl url = event->mimeData()->urls().first();
-    const QFileInfo fileInfo(url.toLocalFile());
-    const QString suffix = fileInfo.suffix().toLower();
-    const bool isVideo = (suffix == "mp4" || suffix == "avi" || suffix == "mkv" || suffix == "mov");
-
-    if (isVideo) {
-        if (!m_sidePanel->getLibraryWidget()->rect().contains(m_sidePanel->getLibraryWidget()->mapFromGlobal(QCursor::pos()))) {
-            event->acceptProposedAction();
-        } else {
-            event->ignore();
+    if (event->mimeData()->hasUrls()) {
+        // Chấp nhận sự kiện nếu có bất kỳ file hợp lệ nào
+        for (const QUrl &url : event->mimeData()->urls()) {
+            QFileInfo fileInfo(url.toLocalFile());
+            QString suffix = fileInfo.suffix().toLower();
+            const bool isVideo = (suffix == "mp4" || suffix == "avi" || suffix == "mkv" || suffix == "mov");
+            const bool isImage = (suffix == "png" || suffix == "jpg" || suffix == "jpeg" || suffix == "bmp");
+            if (isVideo || isImage) {
+                event->acceptProposedAction();
+                return;
+            }
         }
-    } else {
-        event->ignore();
     }
+    event->ignore();
 }
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
     const QList<QUrl> urls = event->mimeData()->urls();
-    if (!urls.isEmpty()) {
-        QString filePath = urls.first().toLocalFile();
-        openVideoFile(filePath);
-        event->acceptProposedAction();
-    } else {
-        event->ignore();
+    bool videoOpened = false;
+
+    for (const QUrl &url : urls) {
+        QString filePath = url.toLocalFile();
+        QFileInfo fileInfo(filePath);
+        QString suffix = fileInfo.suffix().toLower();
+        const bool isVideo = (suffix == "mp4" || suffix == "avi" || suffix == "mkv" || suffix == "mov");
+        const bool isImage = (suffix == "png" || suffix == "jpg" || suffix == "jpeg" || suffix == "bmp");
+
+        // Chỉ mở file video đầu tiên tìm thấy
+        if (isVideo && !videoOpened) {
+            openVideoFile(filePath);
+            videoOpened = true; 
+        } 
+        // Thêm tất cả các file ảnh vào thư viện
+        else if (isImage) {
+            onImagesDroppedOnLibrary({url});
+        }
     }
+    event->acceptProposedAction();
 }
 
 void MainWindow::keyPressEvent(QKeyEvent *event)
@@ -331,8 +352,18 @@ void MainWindow::onCaptureAndExport()
     this->setFocus();
 }
 
+// === GIẢI PHÁP: Hoàn thiện chức năng Mute ===
 void MainWindow::onMuteClicked()
 {
+    bool isMuted = m_playerPanel->isMuted();
+    if (isMuted) {
+        // Unmute: Khôi phục lại âm lượng trước đó
+        m_playerPanel->setVolume(m_lastVolume * 100);
+    } else {
+        // Mute: Đặt âm lượng về 0
+        m_playerPanel->setVolume(0);
+    }
+    this->setFocus();
 }
 
 void MainWindow::onVolumeChanged(int volume)
@@ -340,6 +371,7 @@ void MainWindow::onVolumeChanged(int volume)
     if (m_audioSink) {
         m_audioSink->setVolume(volume / 100.0f);
     }
+    // Chỉ lưu lại âm lượng khi nó > 0
     if (volume > 0) {
         m_lastVolume = volume / 100.0f;
     }
@@ -363,7 +395,6 @@ void MainWindow::onTimelineMoved(int position)
     if (m_duration > 0) {
         qint64 time = m_duration * (double)position / 1000.0;
         m_playerPanel->updateTimeLabelOnly(time, m_duration, m_frameRate);
-        // Chỉ gửi yêu cầu seek khi người dùng đang kéo thả
         if (m_isScrubbing) {
             emit requestSeek(time);
         }
@@ -379,6 +410,7 @@ void MainWindow::onTimelineReleased()
     this->setFocus();
 }
 
+// ... (Các hàm onExportImage, onAddImagesToLibrary, onImagesDroppedOnLibrary, cleanupAudio, etc. không đổi) ...
 void MainWindow::onExportImage(const QImage& image) 
 {
     if (image.isNull()) {

@@ -1,16 +1,15 @@
-// sidepanel.h - Version 2.2 (Sửa lỗi biên dịch)
+// sidepanel.h - Version 2.4 (Thêm phím Delete)
 #ifndef SIDEPANEL_H
 #define SIDEPANEL_H
 
 #include <QWidget>
 #include "stylepanel.h" 
 
-// --- Forward declarations ---
 class LibraryPanel;
 class ViewPanel;
 class ExportPanel;
 class QListWidgetItem;
-class LibraryWidget; // THÊM MỚI: Khai báo để getLibraryWidget() hợp lệ
+class LibraryWidget;
 
 class SidePanel : public QWidget
 {
@@ -34,19 +33,18 @@ public slots:
 
 private slots:
     void onViewAndCropItem(QListWidgetItem* item);
-    void onDeleteItem(QListWidgetItem* item);
+    void onDeleteChecked();
+    void onDeleteSelection(); // Slot mới cho phím Delete
     void onQuickExportItem(QListWidgetItem* item);
     void onLibraryItemsChanged(QListWidgetItem* item);
     void applyStylesToViewPanel(const StyleOptions& options);
     void onExportClicked();
     void onItemDoubleClicked(QListWidgetItem* item);
-    // THÊM MỚI: Khai báo slot đã thiếu
     void onViewPanelCrop();
 
 private:
     void setupUi();
 
-    // Modules con
     LibraryPanel* m_libraryPanel;
     ViewPanel* m_viewPanel;
     StylePanel* m_stylePanel;

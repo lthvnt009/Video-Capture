@@ -1,12 +1,10 @@
-// playerpanel.h - Version 1.1 (Thêm Time Label Update)
-// Module chuyên trách cho panel trình phát video (panel bên trái)
+// playerpanel.h - Version 1.2 (Hoàn thiện Mute)
 #ifndef PLAYERPANEL_H
 #define PLAYERPANEL_H
 
 #include <QWidget>
-#include "videoprocessor.h" // Cần cho FrameData
+#include "videoprocessor.h" 
 
-// --- Forward declarations ---
 class VideoWidget;
 class QPushButton;
 class QSlider;
@@ -23,9 +21,9 @@ class PlayerPanel : public QWidget
 public:
     explicit PlayerPanel(QWidget *parent = nullptr);
     VideoWidget* getVideoWidget() const;
+    bool isMuted() const; // Thêm hàm để kiểm tra trạng thái Mute
 
 signals:
-    // Tín hiệu phát ra khi người dùng tương tác với UI
     void openFileClicked();
     void playPauseClicked();
     void nextFrameClicked();
@@ -38,16 +36,15 @@ signals:
     void timelineMoved(int position);
     void muteClicked();
     void volumeChanged(int volume);
-    void seekRequested(qint64 timestamp); // Tín hiệu khi scrubbing trên timeline
+    void seekRequested(qint64 timestamp);
 
 public slots:
-    // Khe cắm để MainWindow cập nhật trạng thái cho panel này
     void updatePlayerState(bool isVideoLoaded);
     void updateUIWithFrame(const FrameData& frameData, qint64 duration, double frameRate, const AVRational& timeBase);
     void setPlayPauseButtonIcon(bool isPlaying);
-    // THÊM MỚI: Chỉ cập nhật label thời gian để tua video mượt hơn
     void updateTimeLabelOnly(qint64 currentTimeUs, qint64 totalTimeUs, double frameRate);
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void setVolume(int volume); // Thêm slot để điều khiển slider từ bên ngoài
 
 private:
     QString formatTime(int64_t timeUs);

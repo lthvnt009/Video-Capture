@@ -1,4 +1,4 @@
-// stylepanel.h - Version 1.0
+// stylepanel.h - Version 1.3 (Cải tiến UI)
 #ifndef STYLEPANEL_H
 #define STYLEPANEL_H
 
@@ -12,6 +12,7 @@ class QComboBox;
 class QSpinBox;
 class QLabel;
 class QSlider;
+class QCheckBox;
 
 // Struct để đóng gói tất cả các tùy chọn style
 struct StyleOptions {
@@ -66,6 +67,7 @@ private:
     QSlider* m_spacingSlider;
     ClickableFrame *m_colorSwatch;
     QColor m_backgroundColor;
+    QCheckBox* m_noBgCheckBox;
 };
 
 #endif // STYLEPANEL_H
